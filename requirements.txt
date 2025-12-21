@@ -1,0 +1,10 @@
+torch>=2.0
+torchvision
+opencv-python
+scikit-image
+albumentations
+matplotlib
+numpy
+pyyaml
+tqdm
+pytorch-fid  # 用于 FID 计算（需额外安装：pip install pytorch-fid）

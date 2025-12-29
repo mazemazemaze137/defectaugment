@@ -1,68 +1,248 @@
+# src/augment/gan_augment.py
+import os
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, TensorDataset
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader
+from torchvision import transforms
+import cv2
 import numpy as np
-import os
 from pathlib import Path
+from tqdm import tqdm
+import random
 
+# ----------------------------
+# 数据集类（带标签）
+# ----------------------------
+class DefectDataset(Dataset):
+    def __init__(self, root_dir, transform=None):
+        self.root_dir = Path(root_dir)
+        self.transform = transform
+        self.image_paths = []
+        self.labels = []
+        self.class_to_idx = {}
 
-# --- Generator ---
-class Generator(nn.Module):
-    def __init__(self, latent_dim=100, img_size=256):
-        super().__init__()
-        self.init_size = img_size // 4
-        self.l1 = nn.Sequential(nn.Linear(latent_dim, 128 * self.init_size ** 2))
-        self.conv_blocks = nn.Sequential(
-            nn.BatchNorm2d(128),
-            nn.Upsample(scale_factor=2),
-            nn.Conv2d(128, 128, 3, stride=1, padding=1),
-            nn.BatchNorm2d(128, 0.8),
-            nn.ReLU(inplace=True),
-            nn.Upsample(scale_factor=2),
-            nn.Conv2d(128, 64, 3, stride=1, padding=1),
-            nn.BatchNorm2d(64, 0.8),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(64, 1, 3, stride=1, padding=1),
-            nn.Tanh(),
+        # 获取所有子目录作为类别
+        class_dirs = [d for d in self.root_dir.iterdir() if d.is_dir()]
+        class_dirs.sort()
+        self.class_to_idx = {cls.name: idx for idx, cls in enumerate(class_dirs)}
+        self.idx_to_class = {idx: cls for cls, idx in self.class_to_idx.items()}
+
+        for class_dir in class_dirs:
+            label = self.class_to_idx[class_dir.name]
+            for ext in ('*.png', '*.jpg', '*.jpeg'):
+                for img_path in class_dir.rglob(ext):
+                    self.image_paths.append(img_path)
+                    self.labels.append(label)
+
+        if len(self.image_paths) == 0:
+            raise ValueError(f"❌ 目录 {root_dir} 中未找到任何图像！")
+        print(f"✅ 加载 {len(self.image_paths)} 张图像，共 {len(self.class_to_idx)} 类：{list(self.class_to_idx.keys())}")
+
+    def __len__(self):
+        return len(self.image_paths)
+
+    def __getitem__(self, idx):
+        img_path = self.image_paths[idx]
+        image = cv2.imread(str(img_path), cv2.IMREAD_GRAYSCALE)
+        if image is None:
+            image = np.zeros((256, 256), dtype=np.uint8)
+        label = self.labels[idx]
+        if self.transform:
+            image = self.transform(image)
+        return image, label
+
+# ----------------------------
+# 条件生成器 (cGAN Generator)
+# ----------------------------
+class ConditionalGenerator(nn.Module):
+    def __init__(self, nz=100, ngf=64, num_classes=6):
+        super(ConditionalGenerator, self).__init__()
+        self.nz = nz
+        self.num_classes = num_classes
+        # 将类别标签嵌入为 nz 维向量（与噪声同维）
+        self.label_embedding = nn.Embedding(num_classes, nz)
+
+        # 注意：输入通道数 = nz (noise) + nz (label) = nz * 2
+        self.main = nn.Sequential(
+            # 输入: [B, nz*2, 1, 1]
+            nn.ConvTranspose2d(nz * 2, ngf * 32, 4, 1, 0, bias=False),
+            nn.BatchNorm2d(ngf * 32),
+            nn.ReLU(True),
+            # state size: (ngf*32) x 4 x 4
+            nn.ConvTranspose2d(ngf * 32, ngf * 16, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(ngf * 16),
+            nn.ReLU(True),
+            # state size: (ngf*16) x 8 x 8
+            nn.ConvTranspose2d(ngf * 16, ngf * 8, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(ngf * 8),
+            nn.ReLU(True),
+            # state size: (ngf*8) x 16 x 16
+            nn.ConvTranspose2d(ngf * 8, ngf * 4, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(ngf * 4),
+            nn.ReLU(True),
+            # state size: (ngf*4) x 32 x 32
+            nn.ConvTranspose2d(ngf * 4, ngf * 2, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(ngf * 2),
+            nn.ReLU(True),
+            # state size: (ngf*2) x 64 x 64
+            nn.ConvTranspose2d(ngf * 2, ngf, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(ngf),
+            nn.ReLU(True),
+            # state size: (ngf) x 128 x 128
+            nn.ConvTranspose2d(ngf, 1, 4, 2, 1, bias=False),
+            nn.Tanh()
+            # output: [B, 1, 256, 256]
         )
 
-    def forward(self, z):
-        out = self.l1(z)
-        out = out.view(out.shape[0], 128, self.init_size, self.init_size)
-        img = self.conv_blocks(out)
-        return img
+    def forward(self, noise, labels):
+        """
+        noise: [B, nz, 1, 1]
+        labels: [B]
+        """
+        # 嵌入标签 → [B, nz]
+        label_emb = self.label_embedding(labels)
+        # 展平噪声 → [B, nz]
+        noise_flat = noise.squeeze(-1).squeeze(-1)  # 移除最后两个维度
+        # 拼接 → [B, nz + nz] = [B, nz*2]
+        x = torch.cat([noise_flat, label_emb], dim=1)
+        # 重塑为 [B, nz*2, 1, 1]
+        x = x.unsqueeze(-1).unsqueeze(-1)
+        # 通过主干网络
+        return self.main(x)
 
+# ----------------------------
+# 条件判别器 (cGAN Discriminator)
+# ----------------------------
+class ConditionalDiscriminator(nn.Module):
+    def __init__(self, ndf=64, num_classes=6, img_size=256):
+        super(ConditionalDiscriminator, self).__init__()
+        self.num_classes = num_classes
+        self.label_embedding = nn.Embedding(num_classes, img_size * img_size)
 
-# --- 简化训练函数（实际使用时需加载真实数据）---
-def train_gan(real_images, latent_dim=100, epochs=10, lr=0.0002, device='cpu'):
-    generator = Generator(latent_dim).to(device)
-    optimizer_G = torch.optim.Adam(generator.parameters(), lr=lr, betas=(0.5, 0.999))
+        self.main = nn.Sequential(
+            nn.Conv2d(2, ndf, 4, 2, 1, bias=False),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(ndf, ndf * 2, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(ndf * 2),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(ndf * 2, ndf * 4, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(ndf * 4),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(ndf * 4, ndf * 8, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(ndf * 8),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(ndf * 8, ndf * 16, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(ndf * 16),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(ndf * 16, ndf * 32, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(ndf * 32),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(ndf * 32, 1, 4, 1, 0, bias=False),
+            nn.Sigmoid()
+        )
 
-    real_tensor = torch.from_numpy(real_images).float().unsqueeze(1).to(device) / 127.5 - 1  # [-1,1]
-    dataset = TensorDataset(real_tensor)
-    dataloader = DataLoader(dataset, batch_size=16, shuffle=True)
+    def forward(self, img, labels):
+        label_emb = self.label_embedding(labels).view(img.size(0), 1, img.size(2), img.size(3))
+        x = torch.cat([img, label_emb], dim=1)  # [B, 2, H, W]
+        return self.main(x).view(-1, 1).squeeze(1)
 
+# ----------------------------
+# 权重初始化
+# ----------------------------
+def weights_init(m):
+    classname = m.__class__.__name__
+    if classname.find('Conv') != -1:
+        nn.init.normal_(m.weight.data, 0.0, 0.02)
+    elif classname.find('BatchNorm') != -1:
+        nn.init.normal_(m.weight.data, 1.0, 0.02)
+        nn.init.constant_(m.bias.data, 0)
+
+# ----------------------------
+# 核心函数：训练 + 生成
+# ----------------------------
+def generate_gan_samples(
+    image_dir,
+    output_dir,
+    num_samples=30,
+    epochs=30,
+    latent_dim=100,
+    lr=0.0002
+):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"🚀 使用设备: {device}")
+
+    # 数据预处理
+    transform = transforms.Compose([
+        transforms.ToPILImage(),
+        transforms.Resize((256, 256)),
+        transforms.ToTensor(),
+        transforms.Normalize(0.5, 0.5)  # [0,1] → [-1,1]
+    ])
+
+    dataset = DefectDataset(image_dir, transform=transform)
+    dataloader = DataLoader(dataset, batch_size=4, shuffle=True, num_workers=0)
+
+    num_classes = len(dataset.class_to_idx)
+    print(f"🏷️  共 {num_classes} 个类别: {dataset.idx_to_class}")
+
+    # 初始化模型
+    netG = ConditionalGenerator(nz=latent_dim, num_classes=num_classes).to(device)
+    netD = ConditionalDiscriminator(num_classes=num_classes).to(device)
+    netG.apply(weights_init)
+    netD.apply(weights_init)
+
+    # 损失与优化器
+    criterion = nn.BCELoss()
+    optimizerD = optim.Adam(netD.parameters(), lr=lr, betas=(0.5, 0.999))
+    optimizerG = optim.Adam(netG.parameters(), lr=lr, betas=(0.5, 0.999))
+
+    # 训练循环
+    print("⏳ 开始训练 cGAN...")
     for epoch in range(epochs):
-        for i, (imgs,) in enumerate(dataloader):
-            z = torch.randn(imgs.size(0), latent_dim).to(device)
-            gen_imgs = generator(z)
-            # 这里省略判别器和对抗损失（简化版仅用重建损失示意）
-            loss = torch.mean((gen_imgs - imgs) ** 2)  # 仅作示意，实际应使用 GAN loss
-            optimizer_G.zero_grad()
-            loss.backward()
-            optimizer_G.step()
-        print(f"Epoch [{epoch + 1}/{epochs}]")
+        pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{epochs}", leave=False)
+        for real_images, labels in pbar:
+            b_size = real_images.size(0)
+            real_images = real_images.to(device)
+            labels = labels.to(device)
+            label_real = torch.full((b_size,), 1.0, dtype=torch.float, device=device)
+            label_fake = torch.full((b_size,), 0.0, dtype=torch.float, device=device)
 
-    return generator
+            # 更新判别器
+            netD.zero_grad()
+            output = netD(real_images, labels)
+            errD_real = criterion(output, label_real)
+            errD_real.backward()
 
+            noise = torch.randn(b_size, latent_dim, 1, 1, device=device)
+            fake = netG(noise, labels)
+            output = netD(fake.detach(), labels)
+            errD_fake = criterion(output, label_fake)
+            errD_fake.backward()
+            optimizerD.step()
 
-def generate_with_gan(generator, num_samples=100, latent_dim=100, output_dir="results/gan_generated", device='cpu'):
+            # 更新生成器
+            netG.zero_grad()
+            output = netD(fake, labels)
+            errG = criterion(output, label_real)
+            errG.backward()
+            optimizerG.step()
+
+    # 生成新图像（每类生成 num_samples // num_classes 张）
     Path(output_dir).mkdir(parents=True, exist_ok=True)
-    generator.eval()
+    samples_per_class = max(1, num_samples // num_classes)
+    print(f"🎨 每类生成 {samples_per_class} 张图像...")
+
     with torch.no_grad():
-        z = torch.randn(num_samples, latent_dim).to(device)
-        gen_imgs = generator(z).cpu().numpy()
-        gen_imgs = ((gen_imgs + 1) * 127.5).astype(np.uint8)
-        for i in range(num_samples):
-            cv2.imwrite(os.path.join(output_dir, f"gan_{i:04d}.png"), gen_imgs[i, 0])
-    print(f"✅ GAN 生成完成，保存至 {output_dir}")
+        for class_id in range(num_classes):
+            class_name = dataset.idx_to_class[class_id]
+            for i in range(samples_per_class):
+                noise = torch.randn(1, latent_dim, 1, 1, device=device)
+                label = torch.tensor([class_id], device=device)
+                fake_img = netG(noise, label).cpu().squeeze().numpy()
+                fake_img = (fake_img * 0.5 + 0.5) * 255
+                fake_img = np.clip(fake_img, 0, 255).astype(np.uint8)
+                out_path = Path(output_dir) / f"{class_name}_gan_{i:04d}.png"
+                cv2.imwrite(str(out_path), fake_img)
+
+    print(f"✅ cGAN 图像已保存至: {output_dir}")

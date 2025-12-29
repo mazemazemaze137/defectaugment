@@ -1,30 +1,22 @@
-# 数据路径
 data:
-  raw_dir: "data/raw"
-  processed_dir: "data/processed"
-  dataset_name: "NEU-CLS"  # 或 MVTec, Severstal 等
+  raw_dir: "data/raw/mock_defects"
+  processed_dir: "data/processed/mock_defects"
 
-# 图像参数
 image:
   size: 256
   grayscale: true
 
-# 增强设置
 augmentation:
   traditional:
-    enable: true
-    num_samples: 100
+    enable: false
   gan:
     enable: true
-    model_path: "models/gan_generator.pth"
-    num_samples: 100
+    epochs: 500          # 建议至少 500 轮
+    batch_size: 4        # 如果显存不足，改为 2
     latent_dim: 100
-    epochs: 50
-    batch_size: 32
-    lr: 0.0002
+    lr: 0.0001
 
-# 评估
 evaluation:
-  metrics: ["FID", "SSIM", "PSNR"]
+  metrics: ["SSIM", "PSNR"]
   visualize: true
   output_dir: "results"

@@ -7,4 +7,6 @@ matplotlib
 numpy
 pyyaml
 tqdm
-pytorch-fid  # 用于 FID 计算（需额外安装：pip install pytorch-fid）
+pytorch-fid
+streamlit   # ✅ 新增：用于可视化界面
+pandas      # ✅ 新增：用于数据读取于 FID 计算（需额外安装：pip install pytorch-fid）

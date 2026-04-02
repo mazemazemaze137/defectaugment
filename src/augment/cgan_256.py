@@ -1,124 +1,108 @@
-# src/augment/cgan_256.py
+import csv
+import math
+import os
+import time
+from pathlib import Path
+
+import cv2
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset
-import cv2
-import numpy as np
-from pathlib import Path
 from tqdm import tqdm
-import os
-import csv  # ✅ 新增：用于记录训练日志
 
 
-# ----------------------------
-# 1. 改进后的条件判别器 (带 Spectral Normalization)
-# ----------------------------
+def _validate_image_size(image_size):
+    if image_size not in (128, 256):
+        raise ValueError(f"image_size must be 128 or 256, got {image_size}")
+
+
 class ConditionalDiscriminator(nn.Module):
-    def __init__(self, ndf=32, num_classes=6):
+    def __init__(self, ndf=32, num_classes=6, image_size=256):
         super().__init__()
-        self.num_classes = num_classes
-        self.label_embedding = nn.Embedding(num_classes, 256 * 256)
+        _validate_image_size(image_size)
+        self.image_size = image_size
+        self.label_embedding = nn.Embedding(num_classes, image_size * image_size)
 
         def sn_conv2d(in_c, out_c, k, s, p):
-            """应用谱归一化的卷积层，极大提升训练稳定性"""
-            return nn.utils.spectral_norm(nn.Conv2d(in_c, out_c, k, s, p, bias=False))
+            return nn.utils.spectral_norm(
+                nn.Conv2d(in_c, out_c, kernel_size=k, stride=s, padding=p, bias=False)
+            )
 
-        self.main = nn.Sequential(
-            sn_conv2d(2, ndf, 4, 2, 1),  # 128
-            nn.LeakyReLU(0.2, inplace=True),
+        num_downsamples = int(math.log2(image_size)) - 2
+        layers = []
+        in_channels = 2
+        for i in range(num_downsamples):
+            out_channels = ndf * min(2 ** i, 8)
+            layers.append(sn_conv2d(in_channels, out_channels, 4, 2, 1))
+            layers.append(nn.LeakyReLU(0.2, inplace=True))
+            in_channels = out_channels
 
-            sn_conv2d(ndf, ndf * 2, 4, 2, 1),  # 64
-            nn.BatchNorm2d(ndf * 2),
-            nn.LeakyReLU(0.2, inplace=True),
-
-            sn_conv2d(ndf * 2, ndf * 4, 4, 2, 1),  # 32
-            nn.BatchNorm2d(ndf * 4),
-            nn.LeakyReLU(0.2, inplace=True),
-
-            sn_conv2d(ndf * 4, ndf * 8, 4, 2, 1),  # 16
-            nn.BatchNorm2d(ndf * 8),
-            nn.LeakyReLU(0.2, inplace=True),
-
-            sn_conv2d(ndf * 8, ndf * 16, 4, 2, 1),  # 8
-            nn.BatchNorm2d(ndf * 16),
-            nn.LeakyReLU(0.2, inplace=True),
-
-            sn_conv2d(ndf * 16, 1, 8, 1, 0),  # 1x1
-            nn.Sigmoid()
-        )
+        layers.append(sn_conv2d(in_channels, 1, 4, 1, 0))
+        self.main = nn.Sequential(*layers)
 
     def forward(self, img, labels):
-        label_emb = self.label_embedding(labels).view(-1, 1, 256, 256)
-        x = torch.cat([img, label_emb], dim=1)
+        label_map = self.label_embedding(labels).view(-1, 1, self.image_size, self.image_size)
+        x = torch.cat([img, label_map], dim=1)
         return self.main(x).view(-1)
 
 
-# ----------------------------
-# 2. 改进后的条件生成器 (Upsample + Conv)
-# ----------------------------
 class ConditionalGenerator(nn.Module):
-    def __init__(self, nz=100, ngf=32, num_classes=6):
+    def __init__(self, nz=100, ngf=64, num_classes=6, image_size=256):
         super().__init__()
+        _validate_image_size(image_size)
         self.nz = nz
-        self.num_classes = num_classes
+        self.image_size = image_size
         self.label_embedding = nn.Embedding(num_classes, nz)
-        self.ngf = ngf
 
-        self.l1 = nn.Sequential(
-            nn.Linear(nz * 2, ngf * 16 * 4 * 4, bias=False),
-            nn.BatchNorm1d(ngf * 16 * 4 * 4),
-            nn.ReLU(True)
+        self.start_channels = ngf * 8
+        self.fc = nn.Sequential(
+            nn.Linear(nz * 2, self.start_channels * 4 * 4, bias=False),
+            nn.BatchNorm1d(self.start_channels * 4 * 4),
+            nn.ReLU(True),
         )
 
-        def up_block(in_c, out_c):
-            return nn.Sequential(
-                nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
-                nn.Conv2d(in_c, out_c, 3, 1, 1, bias=False),
-                nn.BatchNorm2d(out_c),
-                nn.ReLU(True)
+        num_upsamples = int(math.log2(image_size)) - 2
+        blocks = []
+        in_channels = self.start_channels
+        for _ in range(num_upsamples - 1):
+            out_channels = max(ngf // 2, in_channels // 2)
+            blocks.append(
+                nn.Sequential(
+                    nn.ConvTranspose2d(in_channels, out_channels, 4, 2, 1, bias=False),
+                    nn.BatchNorm2d(out_channels),
+                    nn.ReLU(True),
+                )
             )
-
-        self.up1 = up_block(ngf * 16, ngf * 8)  # 4 -> 8
-        self.up2 = up_block(ngf * 8, ngf * 4)  # 8 -> 16
-        self.up3 = up_block(ngf * 4, ngf * 2)  # 16 -> 32
-        self.up4 = up_block(ngf * 2, ngf)  # 32 -> 64
-        self.up5 = up_block(ngf, ngf // 2)  # 64 -> 128
-
-        self.final = nn.Sequential(
-            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
-            nn.Conv2d(ngf // 2, 1, 3, 1, 1, bias=False),
-            nn.Tanh()
-        )
+            in_channels = out_channels
+        self.blocks = nn.ModuleList(blocks)
+        self.final = nn.ConvTranspose2d(in_channels, 1, 4, 2, 1, bias=False)
+        self.tanh = nn.Tanh()
 
     def forward(self, noise, labels):
         noise = noise.view(-1, self.nz)
         label_emb = self.label_embedding(labels)
         x = torch.cat([noise, label_emb], dim=1)
-        x = self.l1(x)
-        x = x.view(-1, self.ngf * 16, 4, 4)
-
-        x = self.up1(x)
-        x = self.up2(x)
-        x = self.up3(x)
-        x = self.up4(x)
-        x = self.up5(x)
-        return self.final(x)
+        x = self.fc(x).view(-1, self.start_channels, 4, 4)
+        if not self.blocks:
+            raise RuntimeError("Generator upsampling blocks are empty.")
+        for block in self.blocks:
+            x = block(x)
+        x = self.final(x)
+        return self.tanh(x)
 
 
-# ----------------------------
-# 3. 数据集
-# ----------------------------
 class DefectDataset(Dataset):
     def __init__(self, root_dir, size=256):
         self.root_dir = Path(root_dir)
         self.size = size
         if not self.root_dir.exists():
-            raise FileNotFoundError(f"❌ 目录不存在: {root_dir}")
+            raise FileNotFoundError(f"Directory not found: {root_dir}")
 
         self.class_names = sorted([d.name for d in self.root_dir.iterdir() if d.is_dir()])
         if not self.class_names:
-            raise ValueError(f"❌ {root_dir} 中没有类别子文件夹！")
+            raise ValueError(f"No class subdirectories found in {root_dir}")
 
         self.class_to_idx = {name: i for i, name in enumerate(self.class_names)}
         self.img_paths = []
@@ -126,14 +110,14 @@ class DefectDataset(Dataset):
 
         for class_name in self.class_names:
             class_dir = self.root_dir / class_name
-            for ext in ('*.png', '*.jpg', '*.jpeg', '*.bmp'):
+            for ext in ("*.png", "*.jpg", "*.jpeg", "*.bmp", "*.tiff"):
                 for p in class_dir.glob(ext):
                     self.img_paths.append(p)
                     self.labels.append(self.class_to_idx[class_name])
 
-        if len(self.img_paths) == 0:
-            raise ValueError(f"❌ 在 {root_dir} 中未找到任何图像！")
-        print(f"✅ 加载 {len(self.img_paths)} 张图像，共 {len(self.class_names)} 类")
+        if not self.img_paths:
+            raise ValueError(f"No images found in {root_dir}")
+        print(f"Loaded {len(self.img_paths)} images across {len(self.class_names)} classes.")
 
     def __len__(self):
         return len(self.img_paths)
@@ -141,7 +125,8 @@ class DefectDataset(Dataset):
     def __getitem__(self, idx):
         try:
             img = cv2.imread(str(self.img_paths[idx]), cv2.IMREAD_GRAYSCALE)
-            if img is None: return self.__getitem__((idx + 1) % len(self))
+            if img is None:
+                return self.__getitem__((idx + 1) % len(self))
             img = cv2.resize(img, (self.size, self.size))
             img = (img.astype(np.float32) / 255.0 - 0.5) * 2.0
             img = np.expand_dims(img, axis=0)
@@ -151,144 +136,198 @@ class DefectDataset(Dataset):
             return self.__getitem__((idx + 1) % len(self))
 
 
-# ----------------------------
-# 4. 训练函数 (含断点续训 + CSV日志)
-# ----------------------------
 def train_cgan_256(
-        data_dir,
-        output_dir,
-        epochs=500,
-        batch_size=4,
-        nz=100,
-        lr=0.0001,
-        save_interval=50,
-        num_test_samples=1,
-        resume=True
+    data_dir,
+    output_dir,
+    epochs=500,
+    batch_size=4,
+    nz=100,
+    lr=0.0002,
+    lr_g=None,
+    lr_d=None,
+    image_size=128,
+    save_interval=20,
+    num_test_samples=8,
+    resume=True,
+    pause_event=None,
+    stop_event=None,
+    status_callback=None,
 ):
+    _validate_image_size(image_size)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"🚀 使用设备: {device}")
+    print(f"Using device: {device}")
+    print(f"Training image size: {image_size}x{image_size}")
 
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
-    dataset = DefectDataset(data_dir, size=256)
+    dataset = DefectDataset(data_dir, size=image_size)
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=True)
     num_classes = len(dataset.class_names)
 
-    netG = ConditionalGenerator(nz=nz, ngf=32, num_classes=num_classes).to(device)
-    netD = ConditionalDiscriminator(ndf=32, num_classes=num_classes).to(device)
+    net_g = ConditionalGenerator(nz=nz, ngf=64, num_classes=num_classes, image_size=image_size).to(device)
+    net_d = ConditionalDiscriminator(ndf=32, num_classes=num_classes, image_size=image_size).to(device)
 
-    optimizerG = optim.Adam(netG.parameters(), lr=lr, betas=(0.5, 0.999))
-    optimizerD = optim.Adam(netD.parameters(), lr=lr, betas=(0.5, 0.999))
-    criterion = nn.BCELoss()
+    g_lr = lr if lr_g is None else lr_g
+    d_lr = lr if lr_d is None else lr_d
+    optimizer_g = optim.Adam(net_g.parameters(), lr=g_lr, betas=(0.5, 0.999))
+    optimizer_d = optim.Adam(net_d.parameters(), lr=d_lr, betas=(0.5, 0.999))
+    criterion = nn.BCEWithLogitsLoss()
 
     fixed_noise = torch.randn(num_classes * num_test_samples, nz, 1, 1, device=device)
-    fixed_labels = torch.arange(num_classes).repeat_interleave(num_test_samples).to(device)
+    fixed_labels = torch.arange(num_classes, device=device).repeat_interleave(num_test_samples)
 
-    # === 断点加载逻辑 ===
     start_epoch = 1
     checkpoint_path = os.path.join(output_dir, "checkpoint_latest.pth")
 
     if resume and os.path.exists(checkpoint_path):
-        print(f"🔄 发现断点，正在恢复: {checkpoint_path}")
+        print(f"Found checkpoint, resuming: {checkpoint_path}")
         checkpoint = torch.load(checkpoint_path, map_location=device)
-        netG.load_state_dict(checkpoint['netG_state'])
-        netD.load_state_dict(checkpoint['netD_state'])
-        optimizerG.load_state_dict(checkpoint['optimizerG_state'])
-        optimizerD.load_state_dict(checkpoint['optimizerD_state'])
-        start_epoch = checkpoint['epoch'] + 1
-        print(f"✅ 已恢复至 Epoch {start_epoch}")
+        try:
+            net_g.load_state_dict(checkpoint["netG_state"])
+            net_d.load_state_dict(checkpoint["netD_state"])
+            optimizer_g.load_state_dict(checkpoint["optimizerG_state"])
+            optimizer_d.load_state_dict(checkpoint["optimizerD_state"])
+            start_epoch = checkpoint["epoch"] + 1
+            print(f"Resumed from epoch {start_epoch}")
+        except RuntimeError as exc:
+            print(f"Checkpoint incompatible with current model settings, restarting: {exc}")
+            start_epoch = 1
     else:
-        print("🆕 从头开始训练")
+        print("Training from scratch.")
 
-        def weights_init(m):
-            classname = m.__class__.__name__
-            if classname.find('Conv') != -1:
+    def weights_init(m):
+        classname = m.__class__.__name__
+        if classname.find("Conv") != -1 or classname.find("Linear") != -1:
+            if hasattr(m, "weight") and m.weight is not None:
                 nn.init.normal_(m.weight.data, 0.0, 0.02)
-            elif classname.find('BatchNorm') != -1:
-                nn.init.normal_(m.weight.data, 1.0, 0.02)
-                nn.init.constant_(m.bias.data, 0)
+        elif classname.find("BatchNorm") != -1:
+            nn.init.normal_(m.weight.data, 1.0, 0.02)
+            nn.init.constant_(m.bias.data, 0)
 
-        netG.apply(weights_init)
-        netD.apply(weights_init)
+    if start_epoch == 1:
+        net_g.apply(weights_init)
+        net_d.apply(weights_init)
 
-    # === CSV 日志初始化 ===
     log_csv_path = os.path.join(output_dir, "training_log.csv")
-    # 如果是从头训练（或者文件不存在），写入表头
     if start_epoch == 1 or not os.path.exists(log_csv_path):
-        with open(log_csv_path, 'w', newline='') as f:
+        with open(log_csv_path, "w", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow(['epoch', 'D_loss', 'G_loss'])
+            writer.writerow(["epoch", "D_loss", "G_loss"])
 
-    # 训练循环
+    def save_checkpoint(epoch):
+        checkpoint = {
+            "epoch": epoch,
+            "netG_state": net_g.state_dict(),
+            "netD_state": net_d.state_dict(),
+            "optimizerG_state": optimizer_g.state_dict(),
+            "optimizerD_state": optimizer_d.state_dict(),
+            "image_size": image_size,
+            "nz": nz,
+            "num_classes": num_classes,
+        }
+        torch.save(checkpoint, checkpoint_path)
+
+    stopped_early = False
+    last_finished_epoch = start_epoch - 1
+
     for epoch in range(start_epoch, epochs + 1):
+        if stop_event is not None and stop_event.is_set():
+            stopped_early = True
+            break
+
+        if status_callback is not None:
+            status_callback({"state": "running", "epoch": epoch, "epochs": epochs})
+
         pbar = tqdm(dataloader, desc=f"Epoch {epoch}/{epochs}")
-        total_d_loss = 0
-        total_g_loss = 0
+        total_d_loss = 0.0
+        total_g_loss = 0.0
 
         for real_imgs, labels in pbar:
+            while pause_event is not None and pause_event.is_set():
+                if status_callback is not None:
+                    status_callback({"state": "paused", "epoch": epoch, "epochs": epochs})
+                if stop_event is not None and stop_event.is_set():
+                    stopped_early = True
+                    break
+                time.sleep(0.2)
+            if stopped_early:
+                break
+
+            if stop_event is not None and stop_event.is_set():
+                stopped_early = True
+                break
+
             real_imgs = real_imgs.to(device)
             labels = labels.to(device)
             b_size = real_imgs.size(0)
 
-            # 更新 D
-            netD.zero_grad()
+            net_d.zero_grad(set_to_none=True)
             label_real = torch.full((b_size,), 0.9, device=device)
-            output = netD(real_imgs, labels)
-            errD_real = criterion(output, label_real)
-            errD_real.backward()
+            pred_real = net_d(real_imgs, labels)
+            err_d_real = criterion(pred_real, label_real)
 
             noise = torch.randn(b_size, nz, 1, 1, device=device)
-            fake = netG(noise, labels)
+            fake = net_g(noise, labels)
             label_fake = torch.zeros(b_size, device=device)
-            output = netD(fake.detach(), labels)
-            errD_fake = criterion(output, label_fake)
-            errD_fake.backward()
-            optimizerD.step()
+            pred_fake = net_d(fake.detach(), labels)
+            err_d_fake = criterion(pred_fake, label_fake)
 
-            d_loss = errD_real.item() + errD_fake.item()
-            total_d_loss += d_loss
+            err_d = err_d_real + err_d_fake
+            err_d.backward()
+            optimizer_d.step()
+            total_d_loss += err_d.item()
 
-            # 更新 G
-            netG.zero_grad()
+            net_g.zero_grad(set_to_none=True)
             label_g = torch.ones(b_size, device=device)
-            output = netD(fake, labels)
-            errG = criterion(output, label_g)
-            errG.backward()
-            optimizerG.step()
+            pred_g = net_d(fake, labels)
+            err_g = criterion(pred_g, label_g)
+            err_g.backward()
+            optimizer_g.step()
+            total_g_loss += err_g.item()
 
-            total_g_loss += errG.item()
+            pbar.set_postfix(D_loss=err_d.item(), G_loss=err_g.item())
 
-            pbar.set_postfix(D_loss=d_loss, G_loss=errG.item())
+        if stopped_early:
+            break
 
-        # === 写入 CSV 日志 ===
         avg_d_loss = total_d_loss / len(dataloader)
         avg_g_loss = total_g_loss / len(dataloader)
-        with open(log_csv_path, 'a', newline='') as f:
+        with open(log_csv_path, "a", newline="") as f:
             writer = csv.writer(f)
             writer.writerow([epoch, avg_d_loss, avg_g_loss])
 
-        # === 保存最新断点 ===
-        checkpoint = {
-            'epoch': epoch,
-            'netG_state': netG.state_dict(),
-            'netD_state': netD.state_dict(),
-            'optimizerG_state': optimizerG.state_dict(),
-            'optimizerD_state': optimizerD.state_dict()
-        }
-        torch.save(checkpoint, checkpoint_path)
+        save_checkpoint(epoch)
+        last_finished_epoch = epoch
 
-        # === 定期保存可视化样本 ===
         if epoch % save_interval == 0 or epoch == epochs:
             with torch.no_grad():
-                netG.eval()
-                fake_imgs = netG(fixed_noise, fixed_labels).cpu()
-                netG.train()
-                for i in range(num_classes):
-                    img = fake_imgs[i].squeeze().numpy()
-                    img = (img * 0.5 + 0.5) * 255
-                    img = np.clip(img, 0, 255).astype(np.uint8)
-                    out_path = Path(output_dir) / f"epoch_{epoch:04d}_class_{dataset.class_names[i]}.png"
-                    cv2.imwrite(str(out_path), img)
-            print(f"🖼️  已保存第 {epoch} 轮样本")
+                net_g.eval()
+                fake_imgs = net_g(fixed_noise, fixed_labels).cpu()
+                net_g.train()
 
-    print(f"✅ 训练完成！结果保存至: {output_dir}")
+            for class_idx, class_name in enumerate(dataset.class_names):
+                for sample_idx in range(num_test_samples):
+                    tensor_idx = class_idx * num_test_samples + sample_idx
+                    img = fake_imgs[tensor_idx].squeeze().numpy()
+                    img = (img * 0.5 + 0.5) * 255.0
+                    img = np.clip(img, 0, 255).astype(np.uint8)
+                    if num_test_samples == 1:
+                        out_name = f"epoch_{epoch:04d}_class_{class_name}.png"
+                    else:
+                        out_name = f"epoch_{epoch:04d}_class_{class_name}_s{sample_idx:02d}.png"
+                    out_path = Path(output_dir) / out_name
+                    cv2.imwrite(str(out_path), img)
+            print(f"Saved samples for epoch {epoch}")
+
+    if stopped_early:
+        if last_finished_epoch >= start_epoch:
+            save_checkpoint(last_finished_epoch)
+        if status_callback is not None:
+            status_callback({"state": "stopped", "epoch": last_finished_epoch, "epochs": epochs})
+        print(f"Training stopped early at epoch {last_finished_epoch}. Results saved to: {output_dir}")
+        return {"status": "stopped", "last_epoch": last_finished_epoch, "output_dir": output_dir}
+
+    if status_callback is not None:
+        status_callback({"state": "finished", "epoch": epochs, "epochs": epochs})
+    print(f"Training finished. Results saved to: {output_dir}")
+    return {"status": "finished", "last_epoch": epochs, "output_dir": output_dir}

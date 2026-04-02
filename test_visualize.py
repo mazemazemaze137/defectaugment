@@ -8,4 +8,3 @@ plt.figure(figsize=(8, 4))
 plt.subplot(1, 2, 1); plt.imshow(orig, cmap='gray'); plt.title("Original")
 plt.subplot(1, 2, 2); plt.imshow(aug, cmap='gray'); plt.title("Augmented")
 plt.show()
-#333

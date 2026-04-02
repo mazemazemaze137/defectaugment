@@ -14,7 +14,10 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.augment.cgan_256 import train_cgan_256
 from src.augment.traditional import apply_traditional_augmentation
-from src.dataset_loader import load_and_preprocess_dataset
+from src.dataset_loader import (
+    load_and_preprocess_dataset,
+    load_and_preprocess_dataset_from_annotations,
+)
 
 
 st.set_page_config(page_title="工业缺陷数据增强系统", layout="wide", page_icon="🏭")
@@ -27,6 +30,7 @@ EPOCH_DETAIL_PATTERN = re.compile(r"^epoch_(\d+)_class_(.+?)(?:_s(\d+))?\.png$")
 def _init_state():
     defaults = {
         "raw_dir": "data/raw/NEU-DET/train/images",
+        "annotation_dir": "data/raw/NEU-DET/train/annotations",
         "output_path": f"results/gan_run_{datetime.now().strftime('%Y%m%d')}",
         "gan_thread": None,
         "pause_event": None,
@@ -156,6 +160,7 @@ def find_best_epoch(run_dir):
 
 def _run_gan_thread(
     raw_dir,
+    annotation_dir,
     processed_dir,
     output_dir,
     epochs,
@@ -166,13 +171,38 @@ def _run_gan_thread(
     save_interval,
     num_preview,
     resume_flag,
+    use_roi,
+    roi_margin,
+    enhance_contrast,
+    denoise,
+    min_box_size,
     pause_event,
     stop_event,
     control,
 ):
     try:
         control.update({"running": True, "state": "preprocessing", "error": ""})
-        processed = load_and_preprocess_dataset(raw_dir, processed_dir, size=image_size)
+        if use_roi:
+            processed = load_and_preprocess_dataset_from_annotations(
+                images_root=raw_dir,
+                annotations_dir=annotation_dir,
+                processed_dir=processed_dir,
+                size=image_size,
+                grayscale=True,
+                roi_margin=roi_margin,
+                enhance_contrast=enhance_contrast,
+                denoise=denoise,
+                min_box_size=min_box_size,
+            )
+        else:
+            processed = load_and_preprocess_dataset(
+                raw_dir=raw_dir,
+                processed_dir=processed_dir,
+                size=image_size,
+                grayscale=True,
+                enhance_contrast=enhance_contrast,
+                denoise=denoise,
+            )
 
         control.update({"state": "running", "epoch": 0, "epochs": epochs})
         result = train_cgan_256(
@@ -217,6 +247,15 @@ if st.sidebar.button("📂 选择原始数据文件夹"):
         st.session_state.raw_dir = picked
         st.rerun()
 
+anno_text = st.sidebar.text_input("标注文件路径(XML目录)", value=st.session_state.annotation_dir)
+if anno_text != st.session_state.annotation_dir:
+    st.session_state.annotation_dir = anno_text
+if st.sidebar.button("📂 选择标注文件夹"):
+    picked = _pick_folder_via_dialog(st.session_state.annotation_dir)
+    if picked:
+        st.session_state.annotation_dir = picked
+        st.rerun()
+
 if st.session_state.dialog_error:
     st.sidebar.warning(st.session_state.dialog_error)
     st.session_state.dialog_error = ""
@@ -230,6 +269,11 @@ if method == "传统增强 (Traditional)":
 else:
     st.sidebar.subheader("GAN 训练参数")
     image_size = st.sidebar.selectbox("训练分辨率", [128, 256], index=0)
+    use_roi = st.sidebar.checkbox("使用标注框ROI裁剪", value=True)
+    roi_margin = st.sidebar.slider("ROI边界扩展比例", 0.0, 0.30, 0.08, 0.01)
+    enhance_contrast = st.sidebar.checkbox("预处理对比度增强(CLAHE)", value=True)
+    denoise = st.sidebar.checkbox("预处理去噪(中值滤波)", value=True)
+    min_box_size = st.sidebar.number_input("最小缺陷框像素", min_value=2, max_value=32, value=6, step=1)
     train_mode = st.sidebar.radio(
         "训练模式",
         ("断点续训 (Resume)", "重新开始 (Restart) - 生成新文件夹"),
@@ -289,6 +333,10 @@ if start_btn:
             apply_traditional_augmentation(p_dir, output_dir, num_samples=num_samples)
         st.success(f"✅ 传统增强完成！保存至 {output_dir}")
     else:
+        if use_roi and not os.path.exists(st.session_state.annotation_dir):
+            st.error(f"❌ 标注路径不存在: {st.session_state.annotation_dir}")
+            st.stop()
+
         if is_resume:
             final_output_dir = st.session_state.output_path
             os.makedirs(final_output_dir, exist_ok=True)
@@ -308,6 +356,7 @@ if start_btn:
             target=_run_gan_thread,
             args=(
                 st.session_state.raw_dir,
+                st.session_state.annotation_dir,
                 processed_dir,
                 final_output_dir,
                 int(epochs),
@@ -318,6 +367,11 @@ if start_btn:
                 int(save_int),
                 int(num_preview),
                 bool(is_resume),
+                bool(use_roi),
+                float(roi_margin),
+                bool(enhance_contrast),
+                bool(denoise),
+                int(min_box_size),
                 st.session_state.pause_event,
                 st.session_state.stop_event,
                 st.session_state.gan_control,

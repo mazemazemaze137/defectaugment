@@ -1,10 +1,18 @@
 data:
-  raw_dir: "data/raw/mock_defects"
-  processed_dir: "data/processed/mock_defects"
+  raw_dir: "data/raw/NEU-DET/train/images"
+  annotation_dir: "data/raw/NEU-DET/train/annotations"
+  processed_dir: "data/processed/neu_det_roi"
 
 image:
   size: 128
   grayscale: true
+
+preprocess:
+  use_annotation_roi: true
+  roi_margin: 0.08
+  enhance_contrast: true
+  denoise: true
+  min_box_size: 6
 
 augmentation:
   traditional:

@@ -20,6 +20,20 @@ def _image_stats(path):
     return {"mean": mean, "std": std, "sharpness": sharpness}
 
 
+def _summarize(values):
+    if not values:
+        return {"min": 0.0, "p25": 0.0, "median": 0.0, "p75": 0.0, "max": 0.0, "mean": 0.0}
+    arr = np.asarray(values, dtype=np.float64)
+    return {
+        "min": float(np.min(arr)),
+        "p25": float(np.percentile(arr, 25)),
+        "median": float(np.percentile(arr, 50)),
+        "p75": float(np.percentile(arr, 75)),
+        "max": float(np.max(arr)),
+        "mean": float(np.mean(arr)),
+    }
+
+
 def filter_generated_samples(
     input_dir,
     output_dir,
@@ -28,6 +42,7 @@ def filter_generated_samples(
     min_std=8.0,
     min_mean=15.0,
     max_mean=240.0,
+    adaptive_min_per_class=0,
 ):
     input_dir = Path(input_dir)
     output_dir = Path(output_dir)
@@ -43,11 +58,15 @@ def filter_generated_samples(
         "min_std": min_std,
         "min_mean": min_mean,
         "max_mean": max_mean,
+        "adaptive_min_per_class": adaptive_min_per_class,
         "classes": {},
     }
 
     for class_dir in sorted([p for p in input_dir.iterdir() if p.is_dir()]):
         candidates = []
+        all_stats = []
+        fallback_candidates = []
+        reject_reasons = {"sharpness": 0, "std": 0, "mean": 0}
         total = 0
         for path in sorted(class_dir.rglob("*")):
             if not path.is_file() or path.suffix.lower() not in IMAGE_EXTENSIONS:
@@ -56,16 +75,35 @@ def filter_generated_samples(
             stats = _image_stats(path)
             if stats is None:
                 continue
+            all_stats.append(stats)
+            fallback_candidates.append((path, stats))
             if stats["sharpness"] < min_sharpness:
+                reject_reasons["sharpness"] += 1
                 continue
             if stats["std"] < min_std:
+                reject_reasons["std"] += 1
                 continue
             if not (min_mean <= stats["mean"] <= max_mean):
+                reject_reasons["mean"] += 1
                 continue
             candidates.append((path, stats))
 
-        candidates.sort(key=lambda item: (item[1]["sharpness"], item[1]["std"]), reverse=True)
+        sort_key = lambda item: (item[1]["sharpness"], item[1]["std"])
+        candidates.sort(key=sort_key, reverse=True)
+        fallback_candidates.sort(key=sort_key, reverse=True)
         selected = candidates[:max_per_class]
+        used_adaptive_fallback = False
+        if adaptive_min_per_class > 0 and len(selected) < min(max_per_class, adaptive_min_per_class):
+            target_count = min(max_per_class, adaptive_min_per_class, len(fallback_candidates))
+            seen = {path for path, _ in selected}
+            for item in fallback_candidates:
+                if len(selected) >= target_count:
+                    break
+                if item[0] not in seen:
+                    selected.append(item)
+                    seen.add(item[0])
+            used_adaptive_fallback = True
+
         out_class_dir = output_dir / class_dir.name
         out_class_dir.mkdir(parents=True, exist_ok=True)
         for src_path, _ in selected:
@@ -75,8 +113,13 @@ def filter_generated_samples(
             "total": total,
             "passed_filters": len(candidates),
             "selected": len(selected),
+            "used_adaptive_fallback": used_adaptive_fallback,
+            "reject_reasons": reject_reasons,
             "avg_selected_sharpness": float(np.mean([s["sharpness"] for _, s in selected])) if selected else 0.0,
             "avg_selected_std": float(np.mean([s["std"] for _, s in selected])) if selected else 0.0,
+            "sharpness": _summarize([s["sharpness"] for s in all_stats]),
+            "std": _summarize([s["std"] for s in all_stats]),
+            "mean": _summarize([s["mean"] for s in all_stats]),
         }
 
     summary["total_selected"] = sum(item["selected"] for item in summary["classes"].values())
@@ -93,6 +136,7 @@ def parse_args():
     parser.add_argument("--min-std", type=float, default=8.0)
     parser.add_argument("--min-mean", type=float, default=15.0)
     parser.add_argument("--max-mean", type=float, default=240.0)
+    parser.add_argument("--adaptive-min-per-class", type=int, default=0)
     return parser.parse_args()
 
 
@@ -106,6 +150,7 @@ def main():
         min_std=args.min_std,
         min_mean=args.min_mean,
         max_mean=args.max_mean,
+        adaptive_min_per_class=args.adaptive_min_per_class,
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 

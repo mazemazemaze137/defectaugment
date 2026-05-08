@@ -10,6 +10,7 @@ import cv2
 import numpy as np
 import pandas as pd
 import streamlit as st
+import torch
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -21,11 +22,13 @@ from src.dataset_loader import (
 )
 
 
-st.set_page_config(page_title="工业缺陷数据增强系统", layout="wide", page_icon="🏭")
-st.title("🏭 工业表面缺陷数据增强系统")
-
+GAN_METHOD = "深度学习增强 (GAN)"
+TRADITIONAL_METHOD = "传统增强 (Traditional)"
 EPOCH_IMAGE_PATTERN = re.compile(r"^epoch_(\d+)_class_.+\.png$")
 EPOCH_DETAIL_PATTERN = re.compile(r"^epoch_(\d+)_class_(.+?)(?:_s(\d+))?\.png$")
+
+st.set_page_config(page_title="工业缺陷数据增强系统", layout="wide", page_icon="DA")
+st.title("工业表面缺陷数据增强系统")
 
 
 def _init_state():
@@ -36,13 +39,25 @@ def _init_state():
         "gan_thread": None,
         "pause_event": None,
         "stop_event": None,
-        "gan_control": {"running": False, "state": "idle", "epoch": 0, "epochs": 0, "error": ""},
+        "gan_control": {
+            "running": False,
+            "state": "idle",
+            "epoch": 0,
+            "epochs": 0,
+            "error": "",
+        },
         "best_epoch_result": None,
         "dialog_error": "",
     }
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
+
+
+def _device_label():
+    if torch.cuda.is_available():
+        return f"CUDA: {torch.cuda.get_device_name(0)}"
+    return "CPU"
 
 
 def _pick_folder_via_dialog(initial_dir):
@@ -60,7 +75,7 @@ def _pick_folder_via_dialog(initial_dir):
         root.destroy()
         return selected
     except Exception as exc:
-        st.session_state.dialog_error = f"无法打开文件管理器: {exc}"
+        st.session_state.dialog_error = f"无法打开文件管理器：{exc}"
         return None
 
 
@@ -68,6 +83,7 @@ def _collect_epoch_images(run_dir):
     epoch_to_paths = {}
     if not os.path.isdir(run_dir):
         return epoch_to_paths
+
     for file_name in os.listdir(run_dir):
         match = EPOCH_IMAGE_PATTERN.match(file_name)
         if not match:
@@ -112,6 +128,7 @@ def _compute_epoch_quality(image_paths):
             continue
         images.append(img.astype(np.float32))
         sharpness_values.append(cv2.Laplacian(img, cv2.CV_64F).var())
+
     if len(images) < 2:
         return None
 
@@ -127,9 +144,8 @@ def _compute_epoch_quality(image_paths):
 
 
 def find_best_epoch(run_dir):
-    epoch_to_paths = _collect_epoch_images(run_dir)
     rows = []
-    for epoch, paths in sorted(epoch_to_paths.items()):
+    for epoch, paths in sorted(_collect_epoch_images(run_dir).items()):
         metrics = _compute_epoch_quality(paths)
         if metrics is None:
             continue
@@ -184,7 +200,6 @@ def _run_gan_thread(
 ):
     try:
         control.update({"running": True, "state": "preprocessing", "error": ""})
-        # Avoid mixing old and new preprocessed data across runs.
         if os.path.isdir(processed_dir):
             shutil.rmtree(processed_dir, ignore_errors=True)
 
@@ -236,28 +251,26 @@ def _run_gan_thread(
 
 _init_state()
 
-# If thread finished on previous run, sync status
 thread_obj = st.session_state.gan_thread
 if thread_obj is not None and not thread_obj.is_alive():
     st.session_state.gan_control["running"] = False
 
+st.sidebar.header("参数配置")
+st.sidebar.caption(f"训练设备：{_device_label()}")
 
-st.sidebar.header("⚙️ 参数配置")
-
-# Raw path + folder picker
 raw_text = st.sidebar.text_input("原始数据路径", value=st.session_state.raw_dir)
 if raw_text != st.session_state.raw_dir:
     st.session_state.raw_dir = raw_text
-if st.sidebar.button("📂 选择原始数据文件夹"):
+if st.sidebar.button("选择原始数据文件夹"):
     picked = _pick_folder_via_dialog(st.session_state.raw_dir)
     if picked:
         st.session_state.raw_dir = picked
         st.rerun()
 
-anno_text = st.sidebar.text_input("标注文件路径(XML目录)", value=st.session_state.annotation_dir)
+anno_text = st.sidebar.text_input("标注文件路径（XML 目录）", value=st.session_state.annotation_dir)
 if anno_text != st.session_state.annotation_dir:
     st.session_state.annotation_dir = anno_text
-if st.sidebar.button("📂 选择标注文件夹"):
+if st.sidebar.button("选择标注文件夹"):
     picked = _pick_folder_via_dialog(st.session_state.annotation_dir)
     if picked:
         st.session_state.annotation_dir = picked
@@ -268,18 +281,18 @@ if st.session_state.dialog_error:
     st.session_state.dialog_error = ""
 
 processed_dir = "data/processed/gui_temp"
-method = st.sidebar.radio("选择增强模式", ("深度学习增强 (GAN)", "传统增强 (Traditional)"))
+method = st.sidebar.radio("选择增强模式", (GAN_METHOD, TRADITIONAL_METHOD))
 
-if method == "传统增强 (Traditional)":
+if method == TRADITIONAL_METHOD:
     num_samples = st.sidebar.slider("生成样本总数", 50, 2000, 200)
     output_dir = "results/gui_traditional"
 else:
     st.sidebar.subheader("GAN 训练参数")
     image_size = st.sidebar.selectbox("训练分辨率", [128, 256], index=0)
-    use_roi = st.sidebar.checkbox("使用标注框ROI裁剪", value=True)
-    roi_margin = st.sidebar.slider("ROI边界扩展比例", 0.0, 0.30, 0.08, 0.01)
-    enhance_contrast = st.sidebar.checkbox("预处理对比度增强(CLAHE)", value=True)
-    denoise = st.sidebar.checkbox("预处理去噪(中值滤波)", value=True)
+    use_roi = st.sidebar.checkbox("使用标注框 ROI 裁剪", value=True)
+    roi_margin = st.sidebar.slider("ROI 边界扩展比例", 0.0, 0.30, 0.08, 0.01)
+    enhance_contrast = st.sidebar.checkbox("预处理对比度增强（CLAHE）", value=True)
+    denoise = st.sidebar.checkbox("预处理去噪（中值滤波）", value=True)
     min_box_size = st.sidebar.number_input("最小缺陷框像素", min_value=2, max_value=32, value=6, step=1)
     strict_label_match = st.sidebar.checkbox("仅保留同类标注框", value=True)
     train_mode = st.sidebar.radio(
@@ -293,13 +306,13 @@ else:
         output_text = st.sidebar.text_input("输出/续训路径", value=st.session_state.output_path)
         if output_text != st.session_state.output_path:
             st.session_state.output_path = output_text
-        if st.sidebar.button("📂 选择输出/续训文件夹"):
+        if st.sidebar.button("选择输出/续训文件夹"):
             picked = _pick_folder_via_dialog(st.session_state.output_path)
             if picked:
                 st.session_state.output_path = picked
                 st.rerun()
     else:
-        st.sidebar.info("点击开始后将自动创建 `results/gan_run_时间戳` 目录。")
+        st.sidebar.info("点击开始后会自动创建 `results/gan_run_时间戳` 目录。")
 
     epochs = st.sidebar.number_input("训练轮数 (Epochs)", 10, 5000, 400, step=10)
     batch_size = st.sidebar.selectbox("Batch Size", [2, 4, 8, 16], index=1)
@@ -313,53 +326,64 @@ is_running = bool(
     and st.session_state.gan_thread.is_alive()
     and st.session_state.gan_control.get("running", False)
 )
-show_controls = is_running or st.session_state.gan_control.get("state") in {"paused", "running", "preprocessing", "starting"}
+show_controls = is_running or st.session_state.gan_control.get("state") in {
+    "paused",
+    "running",
+    "preprocessing",
+    "starting",
+}
 
-start_btn = st.sidebar.button("🚀 开始任务", type="primary", disabled=is_running)
+start_btn = st.sidebar.button("开始任务", type="primary", disabled=is_running)
 
-if method == "深度学习增强 (GAN)" and show_controls:
+if method == GAN_METHOD and show_controls:
     st.sidebar.markdown("### 训练控制")
     control_col1, control_col2, control_col3 = st.sidebar.columns(3)
-    if control_col1.button("⏸️ 暂停"):
+    if control_col1.button("暂停"):
         st.session_state.pause_event.set()
-    if control_col2.button("▶️ 继续"):
+    if control_col2.button("继续"):
         st.session_state.pause_event.clear()
-    if control_col3.button("⏹️ 停止"):
+    if control_col3.button("停止"):
         st.session_state.stop_event.set()
         st.session_state.pause_event.clear()
 
     state_text = st.session_state.gan_control.get("state", "running")
     epoch = st.session_state.gan_control.get("epoch", 0)
     total_epochs = st.session_state.gan_control.get("epochs", 0)
-    st.sidebar.caption(f"状态: {state_text} | Epoch: {epoch}/{total_epochs}")
+    st.sidebar.caption(f"状态：{state_text} | Epoch: {epoch}/{total_epochs}")
 
 if start_btn:
     if not os.path.exists(st.session_state.raw_dir):
-        st.error(f"❌ 路径不存在: {st.session_state.raw_dir}")
-    elif method == "传统增强 (Traditional)":
+        st.error(f"路径不存在：{st.session_state.raw_dir}")
+    elif method == TRADITIONAL_METHOD:
         with st.spinner("正在执行传统增强..."):
             p_dir = load_and_preprocess_dataset(st.session_state.raw_dir, processed_dir, size=256)
             apply_traditional_augmentation(p_dir, output_dir, num_samples=num_samples)
-        st.success(f"✅ 传统增强完成！保存至 {output_dir}")
+        st.success(f"传统增强完成，保存至 {output_dir}")
     else:
         if use_roi and not os.path.exists(st.session_state.annotation_dir):
-            st.error(f"❌ 标注路径不存在: {st.session_state.annotation_dir}")
+            st.error(f"标注路径不存在：{st.session_state.annotation_dir}")
             st.stop()
 
         if is_resume:
             final_output_dir = st.session_state.output_path
             os.makedirs(final_output_dir, exist_ok=True)
-            st.info(f"🔄 继续训练目录: {final_output_dir}")
+            st.info(f"续训目录：{final_output_dir}")
         else:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             final_output_dir = f"results/gan_run_{timestamp}"
             st.session_state.output_path = final_output_dir
-            st.success(f"🆕 新任务目录: {final_output_dir}")
+            st.success(f"新任务目录：{final_output_dir}")
 
         st.session_state.best_epoch_result = None
         st.session_state.pause_event = threading.Event()
         st.session_state.stop_event = threading.Event()
-        st.session_state.gan_control = {"running": True, "state": "starting", "epoch": 0, "epochs": int(epochs), "error": ""}
+        st.session_state.gan_control = {
+            "running": True,
+            "state": "starting",
+            "epoch": 0,
+            "epochs": int(epochs),
+            "error": "",
+        }
 
         thread = threading.Thread(
             target=_run_gan_thread,
@@ -390,28 +414,28 @@ if start_btn:
         )
         st.session_state.gan_thread = thread
         thread.start()
-        st.info("🔥 训练已在后台启动。可用侧边栏按钮暂停、继续或停止。")
+        st.info("训练已在后台启动，可用侧边栏按钮暂停、继续或停止。")
         st.rerun()
 
 
 st.divider()
-st.header("📊 监控与结果")
+st.header("监控与结果")
 
-active_dir = output_dir if method == "传统增强 (Traditional)" else st.session_state.output_path
-st.caption(f"当前监控目录: `{active_dir}`")
+active_dir = output_dir if method == TRADITIONAL_METHOD else st.session_state.output_path
+st.caption(f"当前监控目录：`{active_dir}`")
 
-if method == "深度学习增强 (GAN)":
+if method == GAN_METHOD:
     control = st.session_state.gan_control
     if control.get("state") == "error":
-        st.error(f"训练错误: {control.get('error', '未知错误')}")
+        st.error(f"训练错误：{control.get('error', '未知错误')}")
     elif control.get("state") == "stopped":
-        st.warning(f"训练已停止，最后完成 epoch: {control.get('epoch', 0)}")
+        st.warning(f"训练已停止，最后完成 epoch：{control.get('epoch', 0)}")
     elif control.get("state") == "paused":
         st.info(f"训练已暂停在 epoch {control.get('epoch', 0)}。")
 
     col1, col2 = st.columns([1.5, 1])
     with col1:
-        st.subheader("📉 训练损失曲线")
+        st.subheader("训练损失曲线")
         log_file = os.path.join(active_dir, "training_log.csv")
         if os.path.exists(log_file):
             try:
@@ -421,12 +445,12 @@ if method == "深度学习增强 (GAN)":
                 else:
                     st.info("日志文件为空。")
             except Exception as exc:
-                st.warning(f"日志读取失败: {exc}")
+                st.warning(f"日志读取失败：{exc}")
         else:
             st.info("等待日志写入...")
 
     with col2:
-        st.subheader("🖼️ 最新生成样本")
+        st.subheader("最新生成样本")
         if os.path.exists(active_dir):
             files = sorted([f for f in os.listdir(active_dir) if f.startswith("epoch_") and f.endswith(".png")])
             if files:
@@ -435,11 +459,11 @@ if method == "深度学习增强 (GAN)":
             else:
                 st.info("等待生成样本...")
         else:
-            st.info("目录尚未创建")
+            st.info("目录尚未创建。")
 
     st.divider()
-    st.subheader("🏅 最佳 Epoch 推荐")
-    if st.button("🔍 分析当前目录最佳 Epoch"):
+    st.subheader("最佳 Epoch 推荐")
+    if st.button("分析当前目录最佳 Epoch"):
         best_result, score_df = find_best_epoch(active_dir)
         if best_result is None:
             st.warning("当前目录样本不足，无法分析最佳 epoch。")
@@ -470,7 +494,7 @@ if method == "深度学习增强 (GAN)":
         if preview_files:
             st.image(
                 os.path.join(active_dir, preview_files[0]),
-                caption=f"最佳 Epoch 示例: {preview_files[0]}",
+                caption=f"最佳 Epoch 示例：{preview_files[0]}",
                 use_container_width=True,
             )
 
@@ -478,7 +502,7 @@ if method == "深度学习增强 (GAN)":
         st.dataframe(score_df[show_cols].sort_values("score", ascending=False).head(10), use_container_width=True)
 
     st.divider()
-    st.subheader("🧭 指定 Epoch 浏览")
+    st.subheader("指定 Epoch 浏览")
     epoch_items = _collect_epoch_details(active_dir)
     available_epochs = sorted(epoch_items.keys())
     if available_epochs:
@@ -509,14 +533,14 @@ if method == "深度学习增强 (GAN)":
     else:
         st.info("当前目录还没有可供浏览的 epoch 样本。")
 
-elif method == "传统增强 (Traditional)":
+elif method == TRADITIONAL_METHOD:
     if os.path.exists(active_dir):
         images = [f for f in os.listdir(active_dir) if f.endswith(".png")]
         if images:
-            st.subheader(f"预览 (共 {len(images)} 张)")
+            st.subheader(f"预览（共 {len(images)} 张）")
             cols = st.columns(4)
             for i, img_name in enumerate(images[:8]):
                 with cols[i % 4]:
                     st.image(os.path.join(active_dir, img_name), caption=img_name, use_container_width=True)
         else:
-            st.info("暂无结果")
+            st.info("暂无结果。")

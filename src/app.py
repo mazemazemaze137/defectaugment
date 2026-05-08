@@ -350,7 +350,7 @@ if module == "下游分类验证":
         value=f"results/classifier_validation_{datetime.now().strftime('%Y%m%d')}",
     )
 
-    cls_col1, cls_col2, cls_col3, cls_col4 = st.columns(4)
+    cls_col1, cls_col2, cls_col3, cls_col4, cls_col5 = st.columns(5)
     with cls_col1:
         cls_epochs = st.number_input("训练轮数", min_value=1, max_value=100, value=5, step=1)
     with cls_col2:
@@ -359,6 +359,8 @@ if module == "下游分类验证":
         cls_image_size = st.number_input("图像尺寸", min_value=64, max_value=256, value=128, step=32)
     with cls_col4:
         cls_lr = st.number_input("学习率", min_value=0.00001, max_value=0.01, value=0.001, format="%.5f")
+    with cls_col5:
+        cls_patience = st.number_input("早停耐心", min_value=0, max_value=20, value=4, step=1)
 
     if st.button("开始分类验证", type="primary"):
         generated_dir_value = cls_generated_dir.strip() or None
@@ -374,6 +376,7 @@ if module == "下游分类验证":
                     batch_size=int(cls_batch_size),
                     lr=float(cls_lr),
                     num_workers=0,
+                    early_stopping_patience=int(cls_patience),
                 )
             except Exception as exc:
                 st.error(f"分类验证失败：{exc}")
@@ -383,8 +386,15 @@ if module == "下游分类验证":
                 metric_cols[1].metric("最终验证准确率", f"{summary['final_val_accuracy']:.2%}")
                 metric_cols[2].metric("训练耗时", f"{summary['elapsed_seconds']:.1f}s")
                 metric_cols[3].metric("训练设备", summary["device"])
+                st.caption(
+                    f"实际完成轮数：{summary.get('completed_epochs', summary['epochs'])} / "
+                    f"{summary['epochs']}；最佳轮数：{summary.get('best_epoch', '-')}"
+                )
 
                 st.dataframe(pd.DataFrame([summary["counts"]]), use_container_width=True)
+                history_path = os.path.join(summary["output_dir"], "history.png")
+                if os.path.exists(history_path):
+                    st.image(history_path, caption="训练曲线", use_container_width=True)
                 confusion_path = os.path.join(summary["output_dir"], "confusion_matrix.png")
                 if os.path.exists(confusion_path):
                     st.image(confusion_path, caption="混淆矩阵", use_container_width=True)

@@ -219,6 +219,28 @@ def _save_confusion_matrix(confusion, class_names, output_path):
     plt.close(fig)
 
 
+def _save_history_plot(history, output_path):
+    if not history:
+        return
+    epochs = [row["epoch"] for row in history]
+    fig, ax1 = plt.subplots(figsize=(8, 5))
+    ax1.plot(epochs, [row["train_accuracy"] for row in history], label="train_acc", color="#2563eb")
+    ax1.plot(epochs, [row["val_accuracy"] for row in history], label="val_acc", color="#16a34a")
+    ax1.set_xlabel("Epoch")
+    ax1.set_ylabel("Accuracy")
+    ax1.set_ylim(0, 1.05)
+    ax2 = ax1.twinx()
+    ax2.plot(epochs, [row["train_loss"] for row in history], label="train_loss", color="#f97316", linestyle="--")
+    ax2.plot(epochs, [row["val_loss"] for row in history], label="val_loss", color="#dc2626", linestyle="--")
+    ax2.set_ylabel("Loss")
+    lines1, labels1 = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax1.legend(lines1 + lines2, labels1 + labels2, loc="best")
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=160)
+    plt.close(fig)
+
+
 def run_classification_validation(
     train_dir,
     val_dir,
@@ -231,6 +253,7 @@ def run_classification_validation(
     num_workers=0,
     seed=42,
     amp=True,
+    early_stopping_patience=0,
 ):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -255,8 +278,10 @@ def run_classification_validation(
     history = []
     start_time = time.perf_counter()
     best_accuracy = 0.0
+    best_epoch = 0
     best_state = None
     final_eval = None
+    patience_counter = 0
 
     for epoch in range(1, epochs + 1):
         model.train()
@@ -299,7 +324,14 @@ def run_classification_validation(
 
         if val_eval["accuracy"] >= best_accuracy:
             best_accuracy = val_eval["accuracy"]
+            best_epoch = epoch
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+            patience_counter = 0
+        else:
+            patience_counter += 1
+            if early_stopping_patience > 0 and patience_counter >= early_stopping_patience:
+                print(f"Early stopping at epoch {epoch}. Best epoch: {best_epoch}")
+                break
 
     elapsed_seconds = time.perf_counter() - start_time
 
@@ -317,6 +349,7 @@ def run_classification_validation(
         )
         writer.writeheader()
         writer.writerows(history)
+    _save_history_plot(history, output_dir / "history.png")
 
     confusion = best_eval["confusion_matrix"] if best_eval is not None else np.zeros((len(class_names), len(class_names)))
     np.savetxt(output_dir / "confusion_matrix.csv", confusion, fmt="%d", delimiter=",")
@@ -327,6 +360,8 @@ def run_classification_validation(
         "class_names": class_names,
         "counts": counts,
         "epochs": epochs,
+        "completed_epochs": len(history),
+        "best_epoch": best_epoch,
         "batch_size": batch_size,
         "image_size": image_size,
         "lr": lr,
@@ -336,6 +371,7 @@ def run_classification_validation(
         "best_val_accuracy": best_accuracy,
         "final_val_accuracy": history[-1]["val_accuracy"] if history else 0.0,
         "best_val_loss": best_eval["loss"] if best_eval is not None else 0.0,
+        "early_stopping_patience": early_stopping_patience,
         "output_dir": str(output_dir),
         "generated_dir": str(generated_dir) if generated_dir else "",
     }
@@ -358,6 +394,7 @@ def main():
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--no-amp", action="store_true")
+    parser.add_argument("--early-stopping-patience", type=int, default=0)
     args = parser.parse_args()
 
     summary = run_classification_validation(
@@ -372,6 +409,7 @@ def main():
         num_workers=args.num_workers,
         seed=args.seed,
         amp=not args.no_amp,
+        early_stopping_patience=args.early_stopping_patience,
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 

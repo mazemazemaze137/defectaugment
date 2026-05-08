@@ -1,10 +1,12 @@
 import xml.etree.ElementTree as ET
+import re
 from pathlib import Path
 
 import cv2
 
 
 SUPPORTED_EXTENSIONS = ("*.png", "*.jpg", "*.jpeg", "*.bmp", "*.tiff")
+IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".bmp", ".tiff")
 
 
 def _read_image(img_path, grayscale=True):
@@ -33,6 +35,39 @@ def _postprocess_image(img, size=256, enhance_contrast=False, denoise=False):
             img = cv2.cvtColor(ycrcb, cv2.COLOR_YCrCb2BGR)
 
     return cv2.resize(img, (size, size))
+
+
+def _resolve_image_path(images_root, filename):
+    filename = (filename or "").strip()
+    if not filename:
+        return None
+
+    direct = images_root / filename
+    if direct.exists():
+        return direct
+
+    stem = Path(filename).stem
+    suffix = Path(filename).suffix.lower()
+
+    # Case 1: filename has no suffix in XML.
+    if not suffix:
+        for ext in IMAGE_SUFFIXES:
+            matches = list(images_root.rglob(stem + ext))
+            if matches:
+                return matches[0]
+
+    # Case 2: filename has suffix but might be in nested class folder.
+    matches = list(images_root.rglob(filename))
+    if matches:
+        return matches[0]
+
+    # Case 3: fallback by stem for inconsistent suffix usage.
+    for ext in IMAGE_SUFFIXES:
+        matches = list(images_root.rglob(stem + ext))
+        if matches:
+            return matches[0]
+
+    return None
 
 
 def load_and_preprocess_dataset(
@@ -102,6 +137,7 @@ def load_and_preprocess_dataset_from_annotations(
     enhance_contrast=True,
     denoise=True,
     min_box_size=6,
+    strict_label_match=True,
 ):
     """
     ROI-focused preprocessing for VOC-style annotations.
@@ -122,6 +158,7 @@ def load_and_preprocess_dataset_from_annotations(
         raise FileNotFoundError(f"No XML annotations found under: {annotations_dir}")
 
     total_crops = 0
+    skipped_label_mismatch = 0
     for xml_path in xml_files:
         try:
             tree = ET.parse(xml_path)
@@ -135,21 +172,7 @@ def load_and_preprocess_dataset_from_annotations(
             print(f"Skip {xml_path.name}: missing filename")
             continue
 
-        img_path = None
-        direct = images_root / filename
-        if direct.exists():
-            img_path = direct
-        else:
-            for ext in (".jpg", ".jpeg", ".png", ".bmp", ".tiff"):
-                candidate = images_root / Path(filename).stem / (Path(filename).stem + ext)
-                if candidate.exists():
-                    img_path = candidate
-                    break
-            if img_path is None:
-                matches = list(images_root.rglob(filename))
-                if matches:
-                    img_path = matches[0]
-
+        img_path = _resolve_image_path(images_root, filename)
         if img_path is None or not img_path.exists():
             print(f"Skip {xml_path.name}: image not found ({filename})")
             continue
@@ -164,8 +187,15 @@ def load_and_preprocess_dataset_from_annotations(
         if not objects:
             continue
 
+        source_stem = Path(filename).stem.lower()
+        source_class = re.sub(r"_\d+$", "", source_stem)
+
         for obj_idx, obj in enumerate(objects):
             class_name = obj.findtext("name", default="unknown").strip().replace(" ", "_")
+            class_name_norm = class_name.lower()
+            if strict_label_match and class_name_norm != source_class:
+                skipped_label_mismatch += 1
+                continue
             box = obj.find("bndbox")
             if box is None:
                 continue
@@ -217,5 +247,7 @@ def load_and_preprocess_dataset_from_annotations(
         raise RuntimeError("No ROI crops were produced. Check annotation/image paths and labels.")
 
     print(f"\nROI preprocessing finished. Total crops: {total_crops}")
+    if strict_label_match:
+        print(f"Skipped label-mismatch boxes: {skipped_label_mismatch}")
     print(f"Output dir: {processed_dir.resolve()}")
     return str(processed_dir)

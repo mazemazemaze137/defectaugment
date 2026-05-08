@@ -33,6 +33,7 @@ def main():
             enhance_contrast=preprocess_cfg.get('enhance_contrast', True),
             denoise=preprocess_cfg.get('denoise', True),
             min_box_size=preprocess_cfg.get('min_box_size', 6),
+            strict_label_match=preprocess_cfg.get('strict_label_match', True),
         )
     else:
         processed_dir = load_and_preprocess_dataset(

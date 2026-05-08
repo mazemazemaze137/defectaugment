@@ -1,5 +1,6 @@
 import os
 import re
+import shutil
 import sys
 import threading
 from datetime import datetime
@@ -176,12 +177,17 @@ def _run_gan_thread(
     enhance_contrast,
     denoise,
     min_box_size,
+    strict_label_match,
     pause_event,
     stop_event,
     control,
 ):
     try:
         control.update({"running": True, "state": "preprocessing", "error": ""})
+        # Avoid mixing old and new preprocessed data across runs.
+        if os.path.isdir(processed_dir):
+            shutil.rmtree(processed_dir, ignore_errors=True)
+
         if use_roi:
             processed = load_and_preprocess_dataset_from_annotations(
                 images_root=raw_dir,
@@ -193,6 +199,7 @@ def _run_gan_thread(
                 enhance_contrast=enhance_contrast,
                 denoise=denoise,
                 min_box_size=min_box_size,
+                strict_label_match=strict_label_match,
             )
         else:
             processed = load_and_preprocess_dataset(
@@ -274,6 +281,7 @@ else:
     enhance_contrast = st.sidebar.checkbox("预处理对比度增强(CLAHE)", value=True)
     denoise = st.sidebar.checkbox("预处理去噪(中值滤波)", value=True)
     min_box_size = st.sidebar.number_input("最小缺陷框像素", min_value=2, max_value=32, value=6, step=1)
+    strict_label_match = st.sidebar.checkbox("仅保留同类标注框", value=True)
     train_mode = st.sidebar.radio(
         "训练模式",
         ("断点续训 (Resume)", "重新开始 (Restart) - 生成新文件夹"),
@@ -305,10 +313,11 @@ is_running = bool(
     and st.session_state.gan_thread.is_alive()
     and st.session_state.gan_control.get("running", False)
 )
+show_controls = is_running or st.session_state.gan_control.get("state") in {"paused", "running", "preprocessing", "starting"}
 
 start_btn = st.sidebar.button("🚀 开始任务", type="primary", disabled=is_running)
 
-if method == "深度学习增强 (GAN)" and is_running:
+if method == "深度学习增强 (GAN)" and show_controls:
     st.sidebar.markdown("### 训练控制")
     control_col1, control_col2, control_col3 = st.sidebar.columns(3)
     if control_col1.button("⏸️ 暂停"):
@@ -372,6 +381,7 @@ if start_btn:
                 bool(enhance_contrast),
                 bool(denoise),
                 int(min_box_size),
+                bool(strict_label_match),
                 st.session_state.pause_event,
                 st.session_state.stop_event,
                 st.session_state.gan_control,
@@ -381,6 +391,7 @@ if start_btn:
         st.session_state.gan_thread = thread
         thread.start()
         st.info("🔥 训练已在后台启动。可用侧边栏按钮暂停、继续或停止。")
+        st.rerun()
 
 
 st.divider()

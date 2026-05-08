@@ -152,6 +152,7 @@ def train_cgan_256(
     pause_event=None,
     stop_event=None,
     status_callback=None,
+    num_workers=None,
 ):
     _validate_image_size(image_size)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -161,7 +162,22 @@ def train_cgan_256(
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
     dataset = DefectDataset(data_dir, size=image_size)
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=True)
+    if num_workers is None:
+        cpu_count = os.cpu_count() or 4
+        num_workers = max(0, min(8, cpu_count - 1))
+    pin_memory = device.type == "cuda"
+    dataloader_kwargs = {
+        "batch_size": batch_size,
+        "shuffle": True,
+        "drop_last": True,
+        "num_workers": num_workers,
+        "pin_memory": pin_memory,
+    }
+    if num_workers > 0:
+        dataloader_kwargs["persistent_workers"] = True
+        dataloader_kwargs["prefetch_factor"] = 2
+    dataloader = DataLoader(dataset, **dataloader_kwargs)
+    print(f"DataLoader workers: {num_workers}, pin_memory={pin_memory}")
     num_classes = len(dataset.class_names)
 
     net_g = ConditionalGenerator(nz=nz, ngf=64, num_classes=num_classes, image_size=image_size).to(device)

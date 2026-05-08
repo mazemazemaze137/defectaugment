@@ -13,6 +13,7 @@ preprocess:
   enhance_contrast: true
   denoise: true
   min_box_size: 6
+  strict_label_match: true
 
 augmentation:
   traditional:

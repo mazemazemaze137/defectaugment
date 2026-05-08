@@ -20,6 +20,7 @@ from src.dataset_loader import (
     load_and_preprocess_dataset,
     load_and_preprocess_dataset_from_annotations,
 )
+from src.evaluate.metrics import evaluate_generated_dataset
 
 
 GAN_METHOD = "深度学习增强 (GAN)"
@@ -279,6 +280,62 @@ if st.sidebar.button("选择标注文件夹"):
 if st.session_state.dialog_error:
     st.sidebar.warning(st.session_state.dialog_error)
     st.session_state.dialog_error = ""
+
+module = st.sidebar.radio("功能模块", ("数据增强训练", "数据质量评估"))
+
+if module == "数据质量评估":
+    st.header("数据质量评估")
+    st.caption("对比真实样本与生成样本，计算 FID、SSIM 和 PSNR。FID 越低越好，SSIM/PSNR 越高越好。")
+
+    eval_real_dir = st.text_input("真实数据集目录", value="data/processed/gui_temp")
+    eval_generated_dir = st.text_input("生成数据集目录", value=st.session_state.output_path)
+
+    col_a, col_b, col_c = st.columns(3)
+    with col_a:
+        eval_image_size = st.number_input("SSIM/PSNR 图像尺寸", min_value=64, max_value=512, value=256, step=32)
+    with col_b:
+        eval_max_pairs = st.number_input("SSIM/PSNR 最大配对数", min_value=10, max_value=2000, value=200, step=10)
+    with col_c:
+        eval_fid_batch = st.number_input("FID Batch Size", min_value=1, max_value=128, value=32, step=1)
+
+    eval_fid = st.checkbox("计算 FID（较慢，但论文价值最高）", value=True)
+
+    if st.button("开始评估", type="primary"):
+        with st.spinner("正在计算质量指标..."):
+            try:
+                metrics = evaluate_generated_dataset(
+                    real_dir=eval_real_dir,
+                    generated_dir=eval_generated_dir,
+                    image_size=int(eval_image_size),
+                    max_pairs=int(eval_max_pairs),
+                    fid_batch_size=int(eval_fid_batch),
+                    calculate_fid_metric=bool(eval_fid),
+                )
+            except Exception as exc:
+                st.error(f"评估失败：{exc}")
+            else:
+                metric_cols = st.columns(3 if eval_fid else 2)
+                metric_cols[0].metric("SSIM", f"{metrics['ssim']:.4f}")
+                metric_cols[1].metric("PSNR", f"{metrics['psnr']:.2f} dB")
+                if eval_fid:
+                    metric_cols[2].metric("FID", f"{metrics['fid']:.2f}")
+
+                st.dataframe(
+                    pd.DataFrame(
+                        [
+                            {
+                                "real_count": metrics["real_count"],
+                                "generated_count": metrics["generated_count"],
+                                "paired_images": metrics["pairs"],
+                                **({"fid": metrics["fid"]} if "fid" in metrics else {}),
+                                "ssim": metrics["ssim"],
+                                "psnr": metrics["psnr"],
+                            }
+                        ]
+                    ),
+                    use_container_width=True,
+                )
+    st.stop()
 
 processed_dir = "data/processed/gui_temp"
 method = st.sidebar.radio("选择增强模式", (GAN_METHOD, TRADITIONAL_METHOD))

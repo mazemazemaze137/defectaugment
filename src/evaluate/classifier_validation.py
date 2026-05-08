@@ -164,6 +164,36 @@ def _set_seed(seed):
         torch.backends.cudnn.benchmark = True
 
 
+def parse_class_weights(text):
+    weights = {}
+    if not text:
+        return weights
+    for item in str(text).split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if "=" not in item:
+            raise ValueError(f"Invalid class weight item: {item}. Expected class=value")
+        class_name, value = item.split("=", 1)
+        weights[_normalize_class_name(class_name)] = float(value)
+    return weights
+
+
+def _build_class_weight_tensor(class_names, class_weights, device):
+    if not class_weights:
+        return None, {name: 1.0 for name in class_names}
+    resolved = []
+    summary = {}
+    for class_name in class_names:
+        weight = float(class_weights.get(_normalize_class_name(class_name), 1.0))
+        resolved.append(weight)
+        summary[class_name] = weight
+    return torch.tensor(resolved, dtype=torch.float32, device=device), summary
+
+
+_parse_class_weights = parse_class_weights
+
+
 def _evaluate(model, loader, criterion, device, num_classes):
     model.eval()
     total_loss = 0.0
@@ -254,6 +284,7 @@ def run_classification_validation(
     seed=42,
     amp=True,
     early_stopping_patience=0,
+    class_weights=None,
 ):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -270,7 +301,8 @@ def run_classification_validation(
     )
 
     model = SmallDefectCNN(num_classes=len(class_names)).to(device)
-    criterion = nn.CrossEntropyLoss()
+    weight_tensor, resolved_class_weights = _build_class_weight_tensor(class_names, class_weights or {}, device)
+    criterion = nn.CrossEntropyLoss(weight=weight_tensor)
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
     use_amp = bool(amp and device.type == "cuda")
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
@@ -372,6 +404,7 @@ def run_classification_validation(
         "final_val_accuracy": history[-1]["val_accuracy"] if history else 0.0,
         "best_val_loss": best_eval["loss"] if best_eval is not None else 0.0,
         "early_stopping_patience": early_stopping_patience,
+        "class_weights": resolved_class_weights,
         "output_dir": str(output_dir),
         "generated_dir": str(generated_dir) if generated_dir else "",
     }
@@ -395,6 +428,11 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--no-amp", action="store_true")
     parser.add_argument("--early-stopping-patience", type=int, default=0)
+    parser.add_argument(
+        "--class-weights",
+        default="",
+        help="Optional comma-separated class loss weights, e.g. pitted-surface=1.5,crazing=1.2",
+    )
     args = parser.parse_args()
 
     summary = run_classification_validation(
@@ -410,6 +448,7 @@ def main():
         seed=args.seed,
         amp=not args.no_amp,
         early_stopping_patience=args.early_stopping_patience,
+        class_weights=parse_class_weights(args.class_weights),
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 

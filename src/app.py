@@ -20,7 +20,7 @@ from src.dataset_loader import (
     load_and_preprocess_dataset,
     load_and_preprocess_dataset_from_annotations,
 )
-from src.evaluate.classifier_validation import run_classification_validation
+from src.evaluate.classifier_validation import parse_class_weights, run_classification_validation
 from src.evaluate.industrial_readiness import analyze_industrial_readiness, parse_severity_overrides
 from src.evaluate.metrics import evaluate_generated_dataset
 
@@ -368,6 +368,12 @@ if module == "下游分类验证":
         cls_lr = st.number_input("学习率", min_value=0.00001, max_value=0.01, value=0.001, format="%.5f")
     with cls_col5:
         cls_patience = st.number_input("早停耐心", min_value=0, max_value=20, value=4, step=1)
+    cls_class_weights = st.text_input(
+        "类别损失权重（可选，用于困难类别）",
+        value="",
+        placeholder="例如：pitted-surface=1.5,crazing=1.2",
+    )
+    auto_industrial_eval = st.checkbox("分类验证后自动生成工业应用评估", value=True)
 
     if st.button("开始分类验证", type="primary"):
         generated_dir_value = cls_generated_dir.strip() or None
@@ -384,6 +390,7 @@ if module == "下游分类验证":
                     lr=float(cls_lr),
                     num_workers=0,
                     early_stopping_patience=int(cls_patience),
+                    class_weights=parse_class_weights(cls_class_weights),
                 )
             except Exception as exc:
                 st.error(f"分类验证失败：{exc}")
@@ -405,6 +412,21 @@ if module == "下游分类验证":
                 confusion_path = os.path.join(summary["output_dir"], "confusion_matrix.png")
                 if os.path.exists(confusion_path):
                     st.image(confusion_path, caption="混淆矩阵", use_container_width=True)
+                if auto_industrial_eval:
+                    try:
+                        industrial = analyze_industrial_readiness(
+                            result_dir=summary["output_dir"],
+                            output_dir=os.path.join(summary["output_dir"], "industrial_readiness"),
+                        )
+                    except Exception as exc:
+                        st.warning(f"工业应用评估生成失败：{exc}")
+                    else:
+                        status = "通过" if industrial["passed"] else "未通过"
+                        st.info(
+                            f"工业应用评估：{status}；最低类别召回率 "
+                            f"{industrial['min_class_recall']:.2%}，代价加权错误率 "
+                            f"{industrial['weighted_error_rate']:.2%}。"
+                        )
                 st.success(f"分类验证结果已保存至：{summary['output_dir']}")
     st.stop()
 

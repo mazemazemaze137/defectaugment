@@ -145,6 +145,147 @@ def _save_result_bars(output_dir):
     plt.close(fig)
 
 
+def _save_system_workflow(output_dir):
+    steps = [
+        ("NEU-DET\nraw images + XML", 0.08, 0.70),
+        ("ROI preprocessing\nCLAHE + denoise", 0.29, 0.70),
+        ("Augmentation\nTraditional / cGAN-v2", 0.50, 0.70),
+        ("Quality gate\nFID + SSIM + PSNR", 0.71, 0.70),
+        ("Sample filtering\nsharpness + std", 0.91, 0.70),
+        ("Classifier validation\nmulti-seed + early stop", 0.29, 0.28),
+        ("Industrial readiness\nrecall + risk cost", 0.55, 0.28),
+        ("Defense evidence\nfigures + reports", 0.80, 0.28),
+    ]
+    arrows = [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5), (5, 6), (6, 7)]
+
+    fig, ax = plt.subplots(figsize=(12, 5.4))
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.axis("off")
+    box_style = dict(boxstyle="round,pad=0.35,rounding_size=0.04", facecolor="#eef5f5", edgecolor="#2f6f73", linewidth=1.8)
+    for idx, (label, x, y) in enumerate(steps):
+        ax.text(x, y, label, ha="center", va="center", fontsize=10, bbox=box_style)
+        if idx in {2, 6}:
+            ax.text(x, y - 0.15, "key defense point", ha="center", va="center", fontsize=8, color="#8b1e1e")
+    for src, dst in arrows:
+        x1, y1 = steps[src][1], steps[src][2]
+        x2, y2 = steps[dst][1], steps[dst][2]
+        if (src, dst) == (4, 5):
+            ax.annotate(
+                "",
+                xy=(x2 + 0.13, y2 + 0.05),
+                xytext=(x1 - 0.05, y1 - 0.06),
+                arrowprops=dict(arrowstyle="->", lw=1.8, color="#4b5563", connectionstyle="angle3,angleA=-90,angleB=180"),
+            )
+        else:
+            ax.annotate(
+                "",
+                xy=(x2 - 0.07 if x2 > x1 else x2, y2),
+                xytext=(x1 + 0.07 if x2 > x1 else x1, y1),
+                arrowprops=dict(arrowstyle="->", lw=1.8, color="#4b5563", connectionstyle="arc3,rad=0.08"),
+            )
+    ax.set_title("DefectAugment workflow for thesis defense and industrial evaluation", fontsize=14, fontweight="bold")
+    fig.tight_layout()
+    fig.savefig(output_dir / "system_workflow_industrial.png", dpi=180)
+    plt.close(fig)
+
+
+def _save_ratio_ablation_plot(output_dir):
+    path = Path("results/ratio_ablation/cgan_v2_40ep_seed42/ratio_ablation_summary.csv")
+    if not path.exists():
+        return
+
+    rows = []
+    with path.open("r", encoding="utf-8-sig", newline="") as file:
+        for row in csv.DictReader(file):
+            rows.append(row)
+    if not rows:
+        return
+
+    rows.sort(key=lambda row: int(row["samples_per_class"]))
+    samples = [int(row["samples_per_class"]) for row in rows]
+    total_samples = [int(row.get("generated_total", row.get("total_generated", 0))) for row in rows]
+    best_acc = [float(row["best_val_accuracy_mean"]) * 100 for row in rows]
+    final_acc = [float(row["final_val_accuracy_mean"]) * 100 for row in rows]
+    best_loss = [float(row["best_val_loss_mean"]) for row in rows]
+
+    x = np.arange(len(samples))
+    fig, ax1 = plt.subplots(figsize=(9.8, 4.8))
+    ax1.plot(x, best_acc, marker="o", linewidth=2.2, color="#206a5d", label="Best val accuracy")
+    ax1.plot(x, final_acc, marker="s", linewidth=2.0, color="#3867a6", label="Final val accuracy")
+    ax1.set_ylabel("Accuracy (%)")
+    ax1.set_ylim(max(80, min(final_acc + best_acc) - 4), 100.5)
+    ax1.set_xticks(x)
+    ax1.set_xticklabels([f"{sample}/class\n{total} total" for sample, total in zip(samples, total_samples)])
+    ax1.grid(axis="y", alpha=0.25)
+    for idx, value in enumerate(best_acc):
+        ax1.text(idx, value + 0.18, f"{value:.2f}%", ha="center", fontsize=8, color="#17463e")
+
+    ax2 = ax1.twinx()
+    ax2.plot(x, best_loss, marker="^", linewidth=2.0, color="#b65f2a", label="Best val loss")
+    ax2.set_ylabel("Loss")
+    for idx, value in enumerate(best_loss):
+        ax2.text(idx + 0.04, value + 0.004, f"{value:.3f}", ha="left", fontsize=8, color="#7d3f1c")
+
+    lines, labels = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax1.legend(lines + lines2, labels + labels2, loc="lower right", fontsize=8)
+    ax1.set_title("cGAN-v2 40ep generated sample ratio ablation", fontsize=13, fontweight="bold")
+    fig.tight_layout()
+    fig.savefig(output_dir / "ratio_ablation_cgan_v2_40ep.png", dpi=180)
+    plt.close(fig)
+
+
+def _save_industrial_gate_comparison(output_dir):
+    experiments = [
+        ("300 samples", Path("results/industrial_readiness/cgan_v2_40ep/industrial_readiness.json")),
+        ("600 samples", Path("results/industrial_readiness/cgan_v2_40ep_600_seed42/industrial_readiness.json")),
+    ]
+    labels = []
+    best_acc = []
+    min_recall = []
+    weighted_error = []
+    passed = []
+    for label, path in experiments:
+        if not path.exists():
+            continue
+        summary = _load_summary(path)
+        labels.append(label)
+        best_acc.append(summary["best_val_accuracy"] * 100)
+        min_recall.append(summary["min_class_recall"] * 100)
+        weighted_error.append(summary["weighted_error_rate"] * 100)
+        passed.append(summary["passed"])
+    if len(labels) < 2:
+        return
+
+    x = np.arange(len(labels))
+    fig, axes = plt.subplots(1, 3, figsize=(11.5, 4.2))
+    metrics = [
+        ("Best accuracy", best_acc, 98.0, ">=", "#206a5d"),
+        ("Min class recall", min_recall, 95.0, ">=", "#3867a6"),
+        ("Weighted error", weighted_error, 6.0, "<=", "#b65f2a"),
+    ]
+    for ax, (title, values, threshold, direction, color) in zip(axes, metrics):
+        bars = ax.bar(x, values, color=color, alpha=0.88)
+        ax.axhline(threshold, color="#8b1e1e", linestyle="--", linewidth=1.4, label=f"gate {direction} {threshold:.0f}%")
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels)
+        ax.set_title(title)
+        ax.grid(axis="y", alpha=0.22)
+        for bar, value in zip(bars, values):
+            ax.text(bar.get_x() + bar.get_width() / 2, value + 0.4, f"{value:.2f}%", ha="center", fontsize=8)
+        ax.legend(fontsize=7, loc="best")
+    axes[0].set_ylabel("Percent (%)")
+    fig.suptitle(
+        f"Industrial readiness gate: {'PASS' if passed[-1] else 'REVIEW'} after ratio tuning",
+        fontsize=13,
+        fontweight="bold",
+    )
+    fig.tight_layout(rect=(0, 0, 1, 0.94))
+    fig.savefig(output_dir / "industrial_gate_comparison.png", dpi=180)
+    plt.close(fig)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Create thesis evidence figures from experiment outputs.")
     parser.add_argument("--output-dir", default="assets/figures")
@@ -155,6 +296,9 @@ def main():
     _save_sample_grid(output_dir)
     _save_history_plot(output_dir)
     _save_result_bars(output_dir)
+    _save_system_workflow(output_dir)
+    _save_ratio_ablation_plot(output_dir)
+    _save_industrial_gate_comparison(output_dir)
     print(json.dumps({"output_dir": str(output_dir), "figures": sorted(p.name for p in output_dir.glob("*.png"))}, ensure_ascii=False, indent=2))
 
 

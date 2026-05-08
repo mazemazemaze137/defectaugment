@@ -187,6 +187,9 @@ def _run_gan_thread(
     lr_g,
     lr_d,
     image_size,
+    model_variant,
+    diff_augment_enabled,
+    ema_decay,
     save_interval,
     num_preview,
     resume_flag,
@@ -237,6 +240,9 @@ def _run_gan_thread(
             lr_g=lr_g,
             lr_d=lr_d,
             image_size=image_size,
+            model_variant=model_variant,
+            diff_augment_enabled=diff_augment_enabled,
+            ema_decay=ema_decay,
             save_interval=save_interval,
             num_test_samples=num_preview,
             resume=resume_flag,
@@ -410,6 +416,14 @@ if method == TRADITIONAL_METHOD:
 else:
     st.sidebar.subheader("GAN 训练参数")
     image_size = st.sidebar.selectbox("训练分辨率", [128, 256], index=0)
+    gan_variant_label = st.sidebar.selectbox(
+        "GAN 模型版本",
+        ["cGAN-v2 Projection + Hinge", "cGAN-v1 LSGAN"],
+        index=0,
+    )
+    model_variant = "projection_hinge" if "v2" in gan_variant_label else "legacy"
+    diff_augment_enabled = st.sidebar.checkbox("启用 DiffAugment", value=model_variant == "projection_hinge")
+    ema_decay = st.sidebar.number_input("EMA 衰减", min_value=0.0, max_value=0.9999, value=0.999, format="%.4f")
     use_roi = st.sidebar.checkbox("使用标注框 ROI 裁剪", value=True)
     roi_margin = st.sidebar.slider("ROI 边界扩展比例", 0.0, 0.30, 0.08, 0.01)
     enhance_contrast = st.sidebar.checkbox("预处理对比度增强（CLAHE）", value=True)
@@ -518,6 +532,9 @@ if start_btn:
                 float(lr_g),
                 float(lr_d),
                 int(image_size),
+                model_variant,
+                bool(diff_augment_enabled),
+                float(ema_decay),
                 int(save_int),
                 int(num_preview),
                 bool(is_resume),

@@ -1,4 +1,5 @@
 import csv
+import copy
 import json
 import math
 import os
@@ -49,6 +50,37 @@ class ConditionalDiscriminator(nn.Module):
         return self.main(x).view(-1)
 
 
+class ProjectionDiscriminator(nn.Module):
+    def __init__(self, ndf=32, num_classes=6, image_size=256):
+        super().__init__()
+        _validate_image_size(image_size)
+
+        def sn_conv2d(in_c, out_c, k, s, p):
+            return nn.utils.spectral_norm(
+                nn.Conv2d(in_c, out_c, kernel_size=k, stride=s, padding=p, bias=False)
+            )
+
+        num_downsamples = int(math.log2(image_size)) - 2
+        layers = []
+        in_channels = 1
+        for i in range(num_downsamples):
+            out_channels = ndf * min(2 ** i, 8)
+            layers.append(sn_conv2d(in_channels, out_channels, 4, 2, 1))
+            layers.append(nn.LeakyReLU(0.2, inplace=True))
+            in_channels = out_channels
+
+        self.features = nn.Sequential(*layers)
+        self.feature_dim = in_channels * 4 * 4
+        self.uncond_head = nn.utils.spectral_norm(nn.Linear(self.feature_dim, 1))
+        self.class_embedding = nn.utils.spectral_norm(nn.Embedding(num_classes, self.feature_dim))
+
+    def forward(self, img, labels):
+        feat = self.features(img).view(img.size(0), -1)
+        uncond = self.uncond_head(feat).view(-1)
+        projected = torch.sum(self.class_embedding(labels) * feat, dim=1)
+        return uncond + projected
+
+
 class ConditionalGenerator(nn.Module):
     def __init__(self, nz=100, ngf=64, num_classes=6, image_size=256):
         super().__init__()
@@ -96,6 +128,46 @@ class ConditionalGenerator(nn.Module):
             x = block(x)
         x = self.final(x)
         return self.tanh(x)
+
+
+class GeneratorEMA:
+    def __init__(self, model, decay=0.999):
+        self.decay = decay
+        self.model = copy.deepcopy(model).eval()
+        for param in self.model.parameters():
+            param.requires_grad_(False)
+
+    @torch.no_grad()
+    def update(self, model):
+        ema_state = self.model.state_dict()
+        model_state = model.state_dict()
+        for key, ema_value in ema_state.items():
+            model_value = model_state[key].detach()
+            if torch.is_floating_point(ema_value):
+                ema_value.mul_(self.decay).add_(model_value, alpha=1.0 - self.decay)
+            else:
+                ema_value.copy_(model_value)
+
+    def state_dict(self):
+        return self.model.state_dict()
+
+    def load_state_dict(self, state):
+        self.model.load_state_dict(state)
+
+
+def diff_augment(images, p=0.8, max_shift=4):
+    if p <= 0 or torch.rand((), device=images.device) > p:
+        return images
+    x = images
+    brightness = torch.empty(x.size(0), 1, 1, 1, device=x.device).uniform_(-0.12, 0.12)
+    contrast = torch.empty(x.size(0), 1, 1, 1, device=x.device).uniform_(0.85, 1.15)
+    x = (x + brightness) * contrast
+
+    if max_shift > 0:
+        shift_x = int(torch.randint(-max_shift, max_shift + 1, (), device=x.device).item())
+        shift_y = int(torch.randint(-max_shift, max_shift + 1, (), device=x.device).item())
+        x = torch.roll(x, shifts=(shift_y, shift_x), dims=(2, 3))
+    return x.clamp(-1.0, 1.0)
 
 
 class DefectDataset(Dataset):
@@ -179,11 +251,19 @@ def train_cgan_256(
     loss_type="lsgan",
     amp=True,
     cache_images=True,
+    model_variant="legacy",
+    diff_augment_enabled=False,
+    ema_decay=0.999,
 ):
     _validate_image_size(image_size)
+    if model_variant not in ("legacy", "projection_hinge"):
+        raise ValueError(f"Unsupported model_variant: {model_variant}")
+    if model_variant == "projection_hinge":
+        loss_type = "hinge"
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     print(f"Training image size: {image_size}x{image_size}")
+    print(f"Model variant: {model_variant}, loss: {loss_type}")
 
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
@@ -208,16 +288,24 @@ def train_cgan_256(
     num_classes = len(dataset.class_names)
 
     net_g = ConditionalGenerator(nz=nz, ngf=64, num_classes=num_classes, image_size=image_size).to(device)
-    net_d = ConditionalDiscriminator(ndf=32, num_classes=num_classes, image_size=image_size).to(device)
+    if model_variant == "projection_hinge":
+        net_d = ProjectionDiscriminator(ndf=32, num_classes=num_classes, image_size=image_size).to(device)
+        net_g_ema = GeneratorEMA(net_g, decay=ema_decay)
+    else:
+        net_d = ConditionalDiscriminator(ndf=32, num_classes=num_classes, image_size=image_size).to(device)
+        net_g_ema = None
 
     g_lr = lr if lr_g is None else lr_g
     d_lr = lr if lr_d is None else lr_d
-    optimizer_g = optim.Adam(net_g.parameters(), lr=g_lr, betas=(0.5, 0.999))
-    optimizer_d = optim.Adam(net_d.parameters(), lr=d_lr, betas=(0.5, 0.999))
+    betas = (0.0, 0.9) if model_variant == "projection_hinge" else (0.5, 0.999)
+    optimizer_g = optim.Adam(net_g.parameters(), lr=g_lr, betas=betas)
+    optimizer_d = optim.Adam(net_d.parameters(), lr=d_lr, betas=betas)
     if loss_type == "lsgan":
         criterion = nn.MSELoss()
     elif loss_type == "bce":
         criterion = nn.BCEWithLogitsLoss()
+    elif loss_type == "hinge":
+        criterion = None
     else:
         raise ValueError(f"Unsupported loss_type: {loss_type}")
 
@@ -238,6 +326,8 @@ def train_cgan_256(
             net_d.load_state_dict(checkpoint["netD_state"])
             optimizer_g.load_state_dict(checkpoint["optimizerG_state"])
             optimizer_d.load_state_dict(checkpoint["optimizerD_state"])
+            if net_g_ema is not None and "netG_ema_state" in checkpoint:
+                net_g_ema.load_state_dict(checkpoint["netG_ema_state"])
             start_epoch = checkpoint["epoch"] + 1
             print(f"Resumed from epoch {start_epoch}")
         except RuntimeError as exc:
@@ -258,6 +348,8 @@ def train_cgan_256(
     if start_epoch == 1:
         net_g.apply(weights_init)
         net_d.apply(weights_init)
+        if net_g_ema is not None:
+            net_g_ema.load_state_dict(net_g.state_dict())
 
     log_csv_path = os.path.join(output_dir, "training_log.csv")
     if start_epoch == 1 or not os.path.exists(log_csv_path):
@@ -276,7 +368,13 @@ def train_cgan_256(
             "nz": nz,
             "num_classes": num_classes,
             "class_names": dataset.class_names,
+            "model_variant": model_variant,
+            "loss_type": loss_type,
+            "diff_augment": bool(diff_augment_enabled),
+            "ema_decay": ema_decay if net_g_ema is not None else None,
         }
+        if net_g_ema is not None:
+            checkpoint["netG_ema_state"] = net_g_ema.state_dict()
         torch.save(checkpoint, checkpoint_path)
 
     stopped_early = False
@@ -315,16 +413,23 @@ def train_cgan_256(
             b_size = real_imgs.size(0)
 
             net_d.zero_grad(set_to_none=True)
-            label_real = torch.full((b_size,), 0.9, device=device)
             noise = torch.randn(b_size, nz, 1, 1, device=device)
-            label_fake = torch.zeros(b_size, device=device)
             with torch.amp.autocast("cuda", enabled=use_amp):
-                pred_real = net_d(real_imgs, labels)
-                err_d_real = criterion(pred_real, label_real)
                 fake = net_g(noise, labels)
-                pred_fake = net_d(fake.detach(), labels)
-                err_d_fake = criterion(pred_fake, label_fake)
-                err_d = err_d_real + err_d_fake
+                if loss_type == "hinge":
+                    real_for_d = diff_augment(real_imgs) if diff_augment_enabled else real_imgs
+                    fake_for_d = diff_augment(fake.detach()) if diff_augment_enabled else fake.detach()
+                    pred_real = net_d(real_for_d, labels)
+                    pred_fake = net_d(fake_for_d, labels)
+                    err_d = torch.relu(1.0 - pred_real).mean() + torch.relu(1.0 + pred_fake).mean()
+                else:
+                    label_real = torch.full((b_size,), 0.9, device=device)
+                    label_fake = torch.zeros(b_size, device=device)
+                    pred_real = net_d(real_imgs, labels)
+                    err_d_real = criterion(pred_real, label_real)
+                    pred_fake = net_d(fake.detach(), labels)
+                    err_d_fake = criterion(pred_fake, label_fake)
+                    err_d = err_d_real + err_d_fake
 
             scaler_d.scale(err_d).backward()
             scaler_d.step(optimizer_d)
@@ -332,13 +437,20 @@ def train_cgan_256(
             total_d_loss += err_d.item()
 
             net_g.zero_grad(set_to_none=True)
-            label_g = torch.ones(b_size, device=device)
             with torch.amp.autocast("cuda", enabled=use_amp):
-                pred_g = net_d(fake, labels)
-                err_g = criterion(pred_g, label_g)
+                if loss_type == "hinge":
+                    fake_for_g = diff_augment(fake) if diff_augment_enabled else fake
+                    pred_g = net_d(fake_for_g, labels)
+                    err_g = -pred_g.mean()
+                else:
+                    label_g = torch.ones(b_size, device=device)
+                    pred_g = net_d(fake, labels)
+                    err_g = criterion(pred_g, label_g)
             scaler_g.scale(err_g).backward()
             scaler_g.step(optimizer_g)
             scaler_g.update()
+            if net_g_ema is not None:
+                net_g_ema.update(net_g)
             total_g_loss += err_g.item()
 
             pbar.set_postfix(D_loss=err_d.item(), G_loss=err_g.item())
@@ -357,9 +469,11 @@ def train_cgan_256(
 
         if epoch % save_interval == 0 or epoch == epochs:
             with torch.no_grad():
-                net_g.eval()
-                fake_imgs = net_g(fixed_noise, fixed_labels).cpu()
-                net_g.train()
+                preview_g = net_g_ema.model if net_g_ema is not None else net_g
+                preview_g.eval()
+                fake_imgs = preview_g(fixed_noise, fixed_labels).cpu()
+                if net_g_ema is None:
+                    net_g.train()
 
             for class_idx, class_name in enumerate(dataset.class_names):
                 for sample_idx in range(num_test_samples):
@@ -395,6 +509,9 @@ def train_cgan_256(
         "num_classes": num_classes,
         "num_images": len(dataset),
         "loss_type": loss_type,
+        "model_variant": model_variant,
+        "diff_augment": bool(diff_augment_enabled),
+        "ema_decay": ema_decay if net_g_ema is not None else None,
         "amp": use_amp,
         "cache_images": cache_images,
         "elapsed_seconds": elapsed_seconds,
@@ -427,7 +544,8 @@ def export_generated_samples(
         raise ValueError("class_names must be provided or stored in checkpoint.")
     num_classes = len(class_names)
     net_g = ConditionalGenerator(nz=nz, ngf=64, num_classes=num_classes, image_size=image_size).to(device)
-    net_g.load_state_dict(checkpoint["netG_state"])
+    generator_state = checkpoint.get("netG_ema_state") or checkpoint["netG_state"]
+    net_g.load_state_dict(generator_state)
     net_g.eval()
 
     output_dir = Path(output_dir)
@@ -453,4 +571,10 @@ def export_generated_samples(
                     written += 1
                 remaining -= current
                 offset += current
-    return {"output_dir": str(output_dir), "written": written, "samples_per_class": samples_per_class}
+    return {
+        "output_dir": str(output_dir),
+        "written": written,
+        "samples_per_class": samples_per_class,
+        "used_ema": "netG_ema_state" in checkpoint,
+        "model_variant": checkpoint.get("model_variant", "legacy"),
+    }

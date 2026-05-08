@@ -20,6 +20,7 @@ from src.dataset_loader import (
     load_and_preprocess_dataset,
     load_and_preprocess_dataset_from_annotations,
 )
+from src.evaluate.classifier_validation import run_classification_validation
 from src.evaluate.metrics import evaluate_generated_dataset
 
 
@@ -281,7 +282,7 @@ if st.session_state.dialog_error:
     st.sidebar.warning(st.session_state.dialog_error)
     st.session_state.dialog_error = ""
 
-module = st.sidebar.radio("功能模块", ("数据增强训练", "数据质量评估"))
+module = st.sidebar.radio("功能模块", ("数据增强训练", "数据质量评估", "下游分类验证"))
 
 if module == "数据质量评估":
     st.header("数据质量评估")
@@ -335,6 +336,59 @@ if module == "数据质量评估":
                     ),
                     use_container_width=True,
                 )
+    st.stop()
+
+if module == "下游分类验证":
+    st.header("下游分类验证")
+    st.caption("训练一个轻量 CNN 分类器，用验证集准确率证明增强数据是否提升下游任务效果。")
+
+    cls_train_dir = st.text_input("训练集目录", value="data/raw/NEU-DET/train/images")
+    cls_val_dir = st.text_input("验证集目录", value="data/raw/NEU-DET/validation/images")
+    cls_generated_dir = st.text_input("生成样本目录（可留空做原始基线）", value="")
+    cls_output_dir = st.text_input(
+        "结果输出目录",
+        value=f"results/classifier_validation_{datetime.now().strftime('%Y%m%d')}",
+    )
+
+    cls_col1, cls_col2, cls_col3, cls_col4 = st.columns(4)
+    with cls_col1:
+        cls_epochs = st.number_input("训练轮数", min_value=1, max_value=100, value=5, step=1)
+    with cls_col2:
+        cls_batch_size = st.number_input("Batch Size", min_value=4, max_value=128, value=32, step=4)
+    with cls_col3:
+        cls_image_size = st.number_input("图像尺寸", min_value=64, max_value=256, value=128, step=32)
+    with cls_col4:
+        cls_lr = st.number_input("学习率", min_value=0.00001, max_value=0.01, value=0.001, format="%.5f")
+
+    if st.button("开始分类验证", type="primary"):
+        generated_dir_value = cls_generated_dir.strip() or None
+        with st.spinner("正在训练分类器并验证效果..."):
+            try:
+                summary = run_classification_validation(
+                    train_dir=cls_train_dir,
+                    val_dir=cls_val_dir,
+                    generated_dir=generated_dir_value,
+                    output_dir=cls_output_dir,
+                    image_size=int(cls_image_size),
+                    epochs=int(cls_epochs),
+                    batch_size=int(cls_batch_size),
+                    lr=float(cls_lr),
+                    num_workers=0,
+                )
+            except Exception as exc:
+                st.error(f"分类验证失败：{exc}")
+            else:
+                metric_cols = st.columns(4)
+                metric_cols[0].metric("最佳验证准确率", f"{summary['best_val_accuracy']:.2%}")
+                metric_cols[1].metric("最终验证准确率", f"{summary['final_val_accuracy']:.2%}")
+                metric_cols[2].metric("训练耗时", f"{summary['elapsed_seconds']:.1f}s")
+                metric_cols[3].metric("训练设备", summary["device"])
+
+                st.dataframe(pd.DataFrame([summary["counts"]]), use_container_width=True)
+                confusion_path = os.path.join(summary["output_dir"], "confusion_matrix.png")
+                if os.path.exists(confusion_path):
+                    st.image(confusion_path, caption="混淆矩阵", use_container_width=True)
+                st.success(f"分类验证结果已保存至：{summary['output_dir']}")
     st.stop()
 
 processed_dir = "data/processed/gui_temp"

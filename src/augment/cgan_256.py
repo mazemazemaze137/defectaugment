@@ -70,14 +70,18 @@ class ConditionalGenerator(nn.Module):
             out_channels = max(ngf // 2, in_channels // 2)
             blocks.append(
                 nn.Sequential(
-                    nn.ConvTranspose2d(in_channels, out_channels, 4, 2, 1, bias=False),
+                    nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False),
+                    nn.Conv2d(in_channels, out_channels, 3, 1, 1, bias=False),
                     nn.BatchNorm2d(out_channels),
                     nn.ReLU(True),
                 )
             )
             in_channels = out_channels
         self.blocks = nn.ModuleList(blocks)
-        self.final = nn.ConvTranspose2d(in_channels, 1, 4, 2, 1, bias=False)
+        self.final = nn.Sequential(
+            nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False),
+            nn.Conv2d(in_channels, 1, 3, 1, 1, bias=False),
+        )
         self.tanh = nn.Tanh()
 
     def forward(self, noise, labels):
@@ -153,6 +157,7 @@ def train_cgan_256(
     stop_event=None,
     status_callback=None,
     num_workers=None,
+    loss_type="lsgan",
 ):
     _validate_image_size(image_size)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -187,7 +192,12 @@ def train_cgan_256(
     d_lr = lr if lr_d is None else lr_d
     optimizer_g = optim.Adam(net_g.parameters(), lr=g_lr, betas=(0.5, 0.999))
     optimizer_d = optim.Adam(net_d.parameters(), lr=d_lr, betas=(0.5, 0.999))
-    criterion = nn.BCEWithLogitsLoss()
+    if loss_type == "lsgan":
+        criterion = nn.MSELoss()
+    elif loss_type == "bce":
+        criterion = nn.BCEWithLogitsLoss()
+    else:
+        raise ValueError(f"Unsupported loss_type: {loss_type}")
 
     fixed_noise = torch.randn(num_classes * num_test_samples, nz, 1, 1, device=device)
     fixed_labels = torch.arange(num_classes, device=device).repeat_interleave(num_test_samples)

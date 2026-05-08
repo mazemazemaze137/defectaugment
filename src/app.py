@@ -29,7 +29,7 @@ TRADITIONAL_METHOD = "传统增强 (Traditional)"
 EPOCH_IMAGE_PATTERN = re.compile(r"^epoch_(\d+)_class_.+\.png$")
 EPOCH_DETAIL_PATTERN = re.compile(r"^epoch_(\d+)_class_(.+?)(?:_s(\d+))?\.png$")
 
-st.set_page_config(page_title="工业缺陷数据增强系统", layout="wide", page_icon="DA")
+st.set_page_config(page_title="工业表面缺陷数据增强系统", layout="wide", page_icon="DA")
 st.title("工业表面缺陷数据增强系统")
 
 
@@ -340,7 +340,7 @@ if module == "数据质量评估":
 
 if module == "下游分类验证":
     st.header("下游分类验证")
-    st.caption("训练一个轻量 CNN 分类器，用验证集准确率证明增强数据是否提升下游任务效果。")
+    st.caption("训练一个轻量 CNN 分类器，用验证集准确率检验增强数据是否提升下游任务效果。")
 
     cls_train_dir = st.text_input("训练集目录", value="data/raw/NEU-DET/train/images")
     cls_val_dir = st.text_input("验证集目录", value="data/raw/NEU-DET/validation/images")

@@ -1,17 +1,49 @@
-# DefectAugment — 工业表面缺陷数据增强系统
+# DefectAugment 工业表面缺陷数据增强系统
 
-## 功能
-- 工业缺陷图像预处理
-- 传统数据增强（旋转、翻转等）
-- GAN 生成式数据增强（DCGAN）
-- 增强质量评估（SSIM/PSNR/FID + 可视化）
+DefectAugment 是一个面向金属表面缺陷数据增强的毕业设计项目。系统基于 Streamlit 提供可视化界面，围绕 NEU-DET 数据集完成数据预处理、传统增强、条件 GAN 生成式增强、生成质量评估和下游分类验证。
+
+## 核心功能
+
+- 数据预处理：支持灰度化、尺寸标准化、标注框 ROI 裁剪、CLAHE 对比度增强和中值滤波去噪。
+- 传统增强：支持旋转、翻转等基础几何变换，可批量生成增强样本。
+- cGAN 生成式增强：按缺陷类别条件生成样本，采用谱归一化、Upsample+Conv 和 LSGAN 损失，支持 CUDA 训练、断点续训、暂停/继续/停止和损失曲线监控。
+- 质量评估：支持 SSIM、PSNR、FID 指标，便于从定量角度分析生成样本质量。
+- 下游验证：训练轻量 CNN 分类器，对比“原始数据”和“原始数据 + 生成数据”的验证准确率。
 
 ## 快速开始
-1. 安装依赖：`pip install -r requirements.txt`
-2. 将原始数据集放入 `data/raw/`
-3. 运行：`python src/main.py`
 
-## 目录说明
-- `data/`: 原始与预处理数据
-- `results/`: 增强结果与评估输出
-- `src/`: 核心代码
+```powershell
+.\.venv\Scripts\activate
+pip install -r requirements.txt
+streamlit run src/app.py
+```
+
+默认界面地址为 `http://127.0.0.1:8501`。
+
+## 推荐目录
+
+- `data/raw/NEU-DET/`：原始 NEU-DET 数据集。
+- `data/processed/`：预处理后的训练样本，运行时自动生成。
+- `results/`：GAN 输出、质量评估结果、分类验证结果和图表。
+- `src/augment/`：传统增强与 GAN 模型代码。
+- `src/evaluate/`：质量指标、分类验证和实验报告脚本。
+
+## 常用命令
+
+```powershell
+# 启动 Streamlit
+streamlit run src/app.py
+
+# 运行下游分类基线
+python -m src.evaluate.classifier_validation --train-dir data/raw/NEU-DET/train/images --val-dir data/raw/NEU-DET/validation/images --output-dir results/classifier_validation/base --epochs 10 --batch-size 32 --image-size 128 --num-workers 0
+
+# 运行加入 GAN 样本后的分类验证
+python -m src.evaluate.classifier_validation --train-dir data/raw/NEU-DET/train/images --val-dir data/raw/NEU-DET/validation/images --generated-dir results/gan_run_20260402_233902 --output-dir results/classifier_validation/augmented --epochs 10 --batch-size 32 --image-size 128 --num-workers 0
+
+# 生成分类验证 Markdown 报告
+python -m src.evaluate.experiment_report --base-dir results/classifier_validation/base --augmented-dir results/classifier_validation/augmented --output results/classifier_validation/report.md
+```
+
+## 当前实验结论
+
+在 RTX 3070 + CUDA 环境下，10 轮轻量 CNN 分类验证显示：原始数据基线最终验证准确率为 96.39%，加入 576 张 GAN 生成样本后最终验证准确率为 96.94%。单次实验表明生成样本对最终准确率有轻微提升，但最佳准确率仍需通过多随机种子、更长训练轮数和不同增强比例继续验证。

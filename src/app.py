@@ -21,6 +21,7 @@ from src.dataset_loader import (
     load_and_preprocess_dataset_from_annotations,
 )
 from src.evaluate.classifier_validation import run_classification_validation
+from src.evaluate.industrial_readiness import analyze_industrial_readiness, parse_severity_overrides
 from src.evaluate.metrics import evaluate_generated_dataset
 
 
@@ -288,7 +289,7 @@ if st.session_state.dialog_error:
     st.sidebar.warning(st.session_state.dialog_error)
     st.session_state.dialog_error = ""
 
-module = st.sidebar.radio("功能模块", ("数据增强训练", "数据质量评估", "下游分类验证"))
+module = st.sidebar.radio("功能模块", ("数据增强训练", "数据质量评估", "下游分类验证", "工业应用评估"))
 
 if module == "数据质量评估":
     st.header("数据质量评估")
@@ -405,6 +406,59 @@ if module == "下游分类验证":
                 if os.path.exists(confusion_path):
                     st.image(confusion_path, caption="混淆矩阵", use_container_width=True)
                 st.success(f"分类验证结果已保存至：{summary['output_dir']}")
+    st.stop()
+
+if module == "工业应用评估":
+    st.header("工业应用评估")
+    st.caption("从混淆矩阵计算类别召回率、精确率、代价加权错误率和上线门槛，辅助判断实验结果是否具备试运行价值。")
+
+    ind_result_dir = st.text_input(
+        "分类验证结果目录",
+        value="results/ablation_earlystop/cgan_v2_40ep_filtered_300",
+    )
+    ind_output_dir = st.text_input("评估报告输出目录（留空则写入结果目录下）", value="")
+
+    ind_col1, ind_col2, ind_col3 = st.columns(3)
+    with ind_col1:
+        min_best_accuracy = st.number_input("最低最佳准确率", min_value=0.0, max_value=1.0, value=0.98, step=0.01)
+    with ind_col2:
+        min_class_recall = st.number_input("最低类别召回率", min_value=0.0, max_value=1.0, value=0.95, step=0.01)
+    with ind_col3:
+        max_weighted_error = st.number_input("最高加权错误率", min_value=0.0, max_value=1.0, value=0.06, step=0.01)
+
+    severity_text = st.text_input(
+        "类别严重度权重（可选）",
+        value="crazing=5,inclusion=4,patches=3,pitted-surface=4,rolled-in-scale=3,scratches=4",
+    )
+
+    if st.button("生成工业应用评估", type="primary"):
+        with st.spinner("正在生成工业应用评估报告..."):
+            try:
+                result = analyze_industrial_readiness(
+                    result_dir=ind_result_dir,
+                    output_dir=ind_output_dir.strip() or None,
+                    min_best_accuracy=float(min_best_accuracy),
+                    min_class_recall=float(min_class_recall),
+                    max_weighted_error=float(max_weighted_error),
+                    severity_overrides=parse_severity_overrides(severity_text),
+                )
+            except Exception as exc:
+                st.error(f"工业应用评估失败：{exc}")
+            else:
+                status = "通过" if result["passed"] else "未通过"
+                metric_cols = st.columns(4)
+                metric_cols[0].metric("评估状态", status)
+                metric_cols[1].metric("最低类别召回率", f"{result['min_class_recall']:.2%}")
+                metric_cols[2].metric("加权错误率", f"{result['weighted_error_rate']:.2%}")
+                metric_cols[3].metric("总错误数", result["total_errors"])
+
+                st.dataframe(pd.DataFrame(result["class_metrics"]), use_container_width=True)
+                recall_path = os.path.join(result["output_dir"], "industrial_recall_by_class.png")
+                if os.path.exists(recall_path):
+                    st.image(recall_path, caption="类别召回率与上线门槛", use_container_width=True)
+                for item in result["recommendations"]:
+                    st.write(f"- {item}")
+                st.success(f"工业应用评估已保存至：{result['output_dir']}")
     st.stop()
 
 processed_dir = "data/processed/gui_temp"

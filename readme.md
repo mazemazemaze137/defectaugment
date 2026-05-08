@@ -12,6 +12,7 @@ DefectAugment 是一个面向金属表面缺陷图像的毕业设计项目。系
 - 样本筛选：按清晰度、灰度方差和亮度阈值筛选生成样本，降低低质量样本进入下游训练的概率。
 - 样本后处理：支持按真实类别统计匹配生成图像亮度和对比度，改善困难类别纹理。
 - 下游验证：训练轻量 CNN 分类器，对比原始数据、GAN 增强数据和传统增强数据的验证准确率。
+- 工业应用评估：基于混淆矩阵计算类别召回率、精确率、代价加权错误率和上线门槛。
 
 ## 快速开始
 
@@ -40,6 +41,9 @@ python -m src.evaluate.experiment_report --base-dir results/ablation_earlystop/b
 
 # 生成论文和答辩用证据图
 python -m src.evaluate.make_evidence_figures --output-dir assets/figures
+
+# 从分类验证结果生成工业应用就绪度报告
+python -m src.evaluate.industrial_readiness --result-dir results/ablation_earlystop/cgan_v2_40ep_filtered_300 --output-dir results/industrial_readiness/cgan_v2_40ep --min-best-accuracy 0.98 --min-class-recall 0.95 --max-weighted-error 0.06
 ```
 
 ## 当前实验结论
@@ -64,5 +68,7 @@ python -m src.evaluate.make_evidence_figures --output-dir assets/figures
 4 月迭代中继续将 cGAN-v2 训练到 40 轮，导出 600 张样本后的质量指标为 SSIM 0.1337、PSNR 14.85 dB、FID 178.41，相比 20 轮 cGAN-v2 的 FID 217.07 进一步改善。按每类 50 张筛选后，下游分类最佳验证准确率达到 97.50%，相比原始数据基线提升 1.94 个百分点，已经明显接近传统增强的 98.61%。
 
 补充 3 个随机种子验证后，原始基线平均最佳验证准确率为 97.69%，cGAN-v2 40 轮质量筛选为 98.80%；平均最佳验证损失从 0.1176 降至 0.0711。增强组最终准确率波动仍然存在，因此论文结论采用“提升最佳可达性能，需配合早停和最佳模型保存”的表述。
+
+从工业应用角度继续评估 cGAN-v2 40 轮分类结果，在最佳准确率门槛 98%、最低类别召回率门槛 95%、代价加权错误率门槛 6% 下，系统给出“未通过直接上线”的结论。主要原因是 `pitted-surface` 召回率为 90.00%，低于工业质检中更关注漏检风险的召回率门槛；但代价加权错误率为 2.54%，说明该模型适合作为离线辅助分析或人工复核并行试运行，而不是无人值守上线。
 
 实验表明，模型结构升级和继续训练确实改善了生成样本分布，并带来了更高的最佳分类准确率；但当前 GAN 增强仍未全面超过传统增强。论文中可据此形成较稳妥的结论：本系统不仅实现了生成式增强，还具备评估、筛选、后处理、下游对照和证据图生成能力；后续应重点优化少数困难类别生成质量、增强比例和多随机种子稳定性。

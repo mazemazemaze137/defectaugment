@@ -1,4 +1,5 @@
 import csv
+import json
 import math
 import os
 import time
@@ -98,9 +99,10 @@ class ConditionalGenerator(nn.Module):
 
 
 class DefectDataset(Dataset):
-    def __init__(self, root_dir, size=256):
+    def __init__(self, root_dir, size=256, cache_images=True):
         self.root_dir = Path(root_dir)
         self.size = size
+        self.cache_images = cache_images
         if not self.root_dir.exists():
             raise FileNotFoundError(f"Directory not found: {root_dir}")
 
@@ -121,21 +123,38 @@ class DefectDataset(Dataset):
 
         if not self.img_paths:
             raise ValueError(f"No images found in {root_dir}")
+        self.cached_images = self._load_cache() if cache_images else None
         print(f"Loaded {len(self.img_paths)} images across {len(self.class_names)} classes.")
+
+    def _load_one(self, path):
+        img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            return None
+        img = cv2.resize(img, (self.size, self.size))
+        img = (img.astype(np.float32) / 255.0 - 0.5) * 2.0
+        img = np.expand_dims(img, axis=0)
+        return torch.from_numpy(img)
+
+    def _load_cache(self):
+        cached = []
+        for path in self.img_paths:
+            cached.append(self._load_one(path))
+        valid_count = sum(img is not None for img in cached)
+        if valid_count == 0:
+            raise ValueError(f"No readable images found in {self.root_dir}")
+        print(f"Cached {valid_count} decoded tensors in memory.")
+        return cached
 
     def __len__(self):
         return len(self.img_paths)
 
     def __getitem__(self, idx):
         try:
-            img = cv2.imread(str(self.img_paths[idx]), cv2.IMREAD_GRAYSCALE)
+            img = self.cached_images[idx] if self.cached_images is not None else self._load_one(self.img_paths[idx])
             if img is None:
                 return self.__getitem__((idx + 1) % len(self))
-            img = cv2.resize(img, (self.size, self.size))
-            img = (img.astype(np.float32) / 255.0 - 0.5) * 2.0
-            img = np.expand_dims(img, axis=0)
             label = self.labels[idx]
-            return torch.from_numpy(img), torch.tensor(label, dtype=torch.long)
+            return img, torch.tensor(label, dtype=torch.long)
         except Exception:
             return self.__getitem__((idx + 1) % len(self))
 
@@ -158,6 +177,8 @@ def train_cgan_256(
     status_callback=None,
     num_workers=None,
     loss_type="lsgan",
+    amp=True,
+    cache_images=True,
 ):
     _validate_image_size(image_size)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -166,7 +187,8 @@ def train_cgan_256(
 
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
-    dataset = DefectDataset(data_dir, size=image_size)
+    torch.backends.cudnn.benchmark = device.type == "cuda"
+    dataset = DefectDataset(data_dir, size=image_size, cache_images=cache_images)
     if num_workers is None:
         cpu_count = os.cpu_count() or 4
         num_workers = max(0, min(8, cpu_count - 1))
@@ -201,6 +223,9 @@ def train_cgan_256(
 
     fixed_noise = torch.randn(num_classes * num_test_samples, nz, 1, 1, device=device)
     fixed_labels = torch.arange(num_classes, device=device).repeat_interleave(num_test_samples)
+    use_amp = bool(amp and device.type == "cuda")
+    scaler_g = torch.amp.GradScaler("cuda", enabled=use_amp)
+    scaler_d = torch.amp.GradScaler("cuda", enabled=use_amp)
 
     start_epoch = 1
     checkpoint_path = os.path.join(output_dir, "checkpoint_latest.pth")
@@ -250,11 +275,13 @@ def train_cgan_256(
             "image_size": image_size,
             "nz": nz,
             "num_classes": num_classes,
+            "class_names": dataset.class_names,
         }
         torch.save(checkpoint, checkpoint_path)
 
     stopped_early = False
     last_finished_epoch = start_epoch - 1
+    train_start_time = time.perf_counter()
 
     for epoch in range(start_epoch, epochs + 1):
         if stop_event is not None and stop_event.is_set():
@@ -289,26 +316,29 @@ def train_cgan_256(
 
             net_d.zero_grad(set_to_none=True)
             label_real = torch.full((b_size,), 0.9, device=device)
-            pred_real = net_d(real_imgs, labels)
-            err_d_real = criterion(pred_real, label_real)
-
             noise = torch.randn(b_size, nz, 1, 1, device=device)
-            fake = net_g(noise, labels)
             label_fake = torch.zeros(b_size, device=device)
-            pred_fake = net_d(fake.detach(), labels)
-            err_d_fake = criterion(pred_fake, label_fake)
+            with torch.amp.autocast("cuda", enabled=use_amp):
+                pred_real = net_d(real_imgs, labels)
+                err_d_real = criterion(pred_real, label_real)
+                fake = net_g(noise, labels)
+                pred_fake = net_d(fake.detach(), labels)
+                err_d_fake = criterion(pred_fake, label_fake)
+                err_d = err_d_real + err_d_fake
 
-            err_d = err_d_real + err_d_fake
-            err_d.backward()
-            optimizer_d.step()
+            scaler_d.scale(err_d).backward()
+            scaler_d.step(optimizer_d)
+            scaler_d.update()
             total_d_loss += err_d.item()
 
             net_g.zero_grad(set_to_none=True)
             label_g = torch.ones(b_size, device=device)
-            pred_g = net_d(fake, labels)
-            err_g = criterion(pred_g, label_g)
-            err_g.backward()
-            optimizer_g.step()
+            with torch.amp.autocast("cuda", enabled=use_amp):
+                pred_g = net_d(fake, labels)
+                err_g = criterion(pred_g, label_g)
+            scaler_g.scale(err_g).backward()
+            scaler_g.step(optimizer_g)
+            scaler_g.update()
             total_g_loss += err_g.item()
 
             pbar.set_postfix(D_loss=err_d.item(), G_loss=err_g.item())
@@ -353,7 +383,74 @@ def train_cgan_256(
         print(f"Training stopped early at epoch {last_finished_epoch}. Results saved to: {output_dir}")
         return {"status": "stopped", "last_epoch": last_finished_epoch, "output_dir": output_dir}
 
+    elapsed_seconds = time.perf_counter() - train_start_time
+    trained_epochs = max(epochs - start_epoch + 1, 0)
+    summary = {
+        "status": "finished",
+        "last_epoch": epochs,
+        "output_dir": output_dir,
+        "data_dir": str(data_dir),
+        "image_size": image_size,
+        "batch_size": batch_size,
+        "num_classes": num_classes,
+        "num_images": len(dataset),
+        "loss_type": loss_type,
+        "amp": use_amp,
+        "cache_images": cache_images,
+        "elapsed_seconds": elapsed_seconds,
+        "images_per_second": (len(dataset) * trained_epochs) / max(elapsed_seconds, 1e-9),
+    }
+    with open(Path(output_dir) / "training_summary.json", "w", encoding="utf-8") as f:
+        json.dump(summary, f, ensure_ascii=False, indent=2)
+
     if status_callback is not None:
         status_callback({"state": "finished", "epoch": epochs, "epochs": epochs})
     print(f"Training finished. Results saved to: {output_dir}")
-    return {"status": "finished", "last_epoch": epochs, "output_dir": output_dir}
+    return summary
+
+
+def export_generated_samples(
+    checkpoint_path,
+    output_dir,
+    class_names=None,
+    samples_per_class=100,
+    nz=100,
+    image_size=128,
+    batch_size=64,
+):
+    _validate_image_size(image_size)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    if class_names is None:
+        class_names = checkpoint.get("class_names")
+    if not class_names:
+        raise ValueError("class_names must be provided or stored in checkpoint.")
+    num_classes = len(class_names)
+    net_g = ConditionalGenerator(nz=nz, ngf=64, num_classes=num_classes, image_size=image_size).to(device)
+    net_g.load_state_dict(checkpoint["netG_state"])
+    net_g.eval()
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    written = 0
+    with torch.no_grad():
+        for class_idx, class_name in enumerate(class_names):
+            class_dir = output_dir / class_name
+            class_dir.mkdir(parents=True, exist_ok=True)
+            remaining = samples_per_class
+            offset = 0
+            while remaining > 0:
+                current = min(batch_size, remaining)
+                noise = torch.randn(current, nz, 1, 1, device=device)
+                labels = torch.full((current,), class_idx, dtype=torch.long, device=device)
+                fake_imgs = net_g(noise, labels).cpu()
+                for i in range(current):
+                    img = fake_imgs[i].squeeze().numpy()
+                    img = (img * 0.5 + 0.5) * 255.0
+                    img = np.clip(img, 0, 255).astype(np.uint8)
+                    out_path = class_dir / f"{class_name}_gan_{offset + i:04d}.png"
+                    cv2.imwrite(str(out_path), img)
+                    written += 1
+                remaining -= current
+                offset += current
+    return {"output_dir": str(output_dir), "written": written, "samples_per_class": samples_per_class}

@@ -42,8 +42,13 @@ python -m src.evaluate.classifier_validation --train-dir data/raw/NEU-DET/train/
 
 # 生成分类验证 Markdown 报告
 python -m src.evaluate.experiment_report --base-dir results/classifier_validation/base --augmented-dir results/classifier_validation/augmented --output results/classifier_validation/report.md
+
+# 从 cGAN 检查点导出按类别组织的正式生成样本
+python -m src.augment.export_cgan_samples --checkpoint results/gan_run_xxx/checkpoint_latest.pth --output-dir results/gan_run_xxx/export_100_per_class --samples-per-class 100 --image-size 128
 ```
 
 ## 当前实验结论
 
 在 RTX 3070 + CUDA 环境下，10 轮轻量 CNN 分类验证显示：原始数据基线最终验证准确率为 96.39%，加入 576 张 GAN 生成样本后最终验证准确率为 96.94%。单次实验表明生成样本对最终准确率有轻微提升，但最佳准确率仍需通过多随机种子、更长训练轮数和不同增强比例继续验证。
+
+优化后的 20 轮 cGAN 实验使用 3172 张 ROI 样本、batch size 16、AMP 和内存缓存，耗时约 140.79 秒，吞吐约 450.60 images/s。导出每类 100 张、共 600 张生成样本后，15 轮下游分类验证显示最终验证准确率由 83.33% 提升到 96.94%，但最佳验证准确率由 99.17% 小幅下降到 98.61%，说明当前生成样本更适合作为训练正则化补充，生成质量仍需继续提升。

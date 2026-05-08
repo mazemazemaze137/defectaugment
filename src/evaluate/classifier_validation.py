@@ -1,6 +1,7 @@
 import argparse
 import csv
 import json
+import random
 import re
 import time
 from pathlib import Path
@@ -154,6 +155,15 @@ def _build_loaders(train_dir, val_dir, generated_dir=None, image_size=128, batch
     return train_loader, val_loader, class_names, counts
 
 
+def _set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.benchmark = True
+
+
 def _evaluate(model, loader, criterion, device, num_classes):
     model.eval()
     total_loss = 0.0
@@ -219,9 +229,12 @@ def run_classification_validation(
     batch_size=32,
     lr=1e-3,
     num_workers=0,
+    seed=42,
+    amp=True,
 ):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    _set_seed(seed)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     train_loader, val_loader, class_names, counts = _build_loaders(
@@ -236,6 +249,8 @@ def run_classification_validation(
     model = SmallDefectCNN(num_classes=len(class_names)).to(device)
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
+    use_amp = bool(amp and device.type == "cuda")
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
 
     history = []
     start_time = time.perf_counter()
@@ -255,10 +270,12 @@ def run_classification_validation(
             labels = labels.to(device, non_blocking=True)
 
             optimizer.zero_grad(set_to_none=True)
-            outputs = model(images)
-            loss = criterion(outputs, labels)
-            loss.backward()
-            optimizer.step()
+            with torch.amp.autocast("cuda", enabled=use_amp):
+                outputs = model(images)
+                loss = criterion(outputs, labels)
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
 
             preds = outputs.argmax(dim=1)
             train_loss += loss.item() * labels.size(0)
@@ -282,12 +299,16 @@ def run_classification_validation(
 
         if val_eval["accuracy"] >= best_accuracy:
             best_accuracy = val_eval["accuracy"]
-            best_state = model.state_dict()
+            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
 
     elapsed_seconds = time.perf_counter() - start_time
 
     if best_state is not None:
         torch.save(best_state, output_dir / "classifier_best.pth")
+        model.load_state_dict(best_state)
+        best_eval = _evaluate(model, val_loader, criterion, device, len(class_names))
+    else:
+        best_eval = final_eval
 
     with open(output_dir / "history.csv", "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(
@@ -297,7 +318,7 @@ def run_classification_validation(
         writer.writeheader()
         writer.writerows(history)
 
-    confusion = final_eval["confusion_matrix"] if final_eval is not None else np.zeros((len(class_names), len(class_names)))
+    confusion = best_eval["confusion_matrix"] if best_eval is not None else np.zeros((len(class_names), len(class_names)))
     np.savetxt(output_dir / "confusion_matrix.csv", confusion, fmt="%d", delimiter=",")
     _save_confusion_matrix(confusion, class_names, output_dir / "confusion_matrix.png")
 
@@ -309,9 +330,12 @@ def run_classification_validation(
         "batch_size": batch_size,
         "image_size": image_size,
         "lr": lr,
+        "seed": seed,
+        "amp": use_amp,
         "elapsed_seconds": elapsed_seconds,
         "best_val_accuracy": best_accuracy,
         "final_val_accuracy": history[-1]["val_accuracy"] if history else 0.0,
+        "best_val_loss": best_eval["loss"] if best_eval is not None else 0.0,
         "output_dir": str(output_dir),
         "generated_dir": str(generated_dir) if generated_dir else "",
     }
@@ -332,6 +356,8 @@ def main():
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--num-workers", type=int, default=0)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--no-amp", action="store_true")
     args = parser.parse_args()
 
     summary = run_classification_validation(
@@ -344,6 +370,8 @@ def main():
         batch_size=args.batch_size,
         lr=args.lr,
         num_workers=args.num_workers,
+        seed=args.seed,
+        amp=not args.no_amp,
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 

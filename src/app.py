@@ -17,6 +17,8 @@ import torch
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.augment.cgan_256 import train_cgan_256
+from src.augment.cgan_256 import export_generated_samples
+from src.augment.refine_generated_samples import refine_generated_samples
 from src.augment.traditional import apply_traditional_augmentation
 from src.dataset_loader import (
     load_and_preprocess_dataset,
@@ -779,8 +781,13 @@ else:
         "GAN 模型版本",
         ["cGAN-v2 Projection + Hinge", "cGAN-v1 LSGAN"],
         index=0,
+        help="cGAN-v2 更适合正式实验；cGAN-v1 保留为对照模型，用于说明模型结构升级带来的稳定性差异。",
     )
     model_variant = "projection_hinge" if "v2" in gan_variant_label else "legacy"
+    if model_variant == "projection_hinge":
+        st.sidebar.caption("推荐：cGAN-v2 使用 Projection Discriminator、Hinge Loss、DiffAugment 和 EMA，生成纹理更稳定。")
+    else:
+        st.sidebar.caption("对照：cGAN-v1 使用 LSGAN，可用于答辩中说明早期模型效果和改进过程。")
     diff_augment_enabled = st.sidebar.checkbox("启用 DiffAugment", value=model_variant == "projection_hinge")
     ema_decay = st.sidebar.number_input("EMA 衰减", min_value=0.0, max_value=0.9999, value=0.999, format="%.4f")
     use_roi = st.sidebar.checkbox("使用标注框 ROI 裁剪", value=True)
@@ -1008,6 +1015,98 @@ if method == GAN_METHOD:
 
         show_cols = ["epoch", "sharpness", "diversity", "score", "num_images"]
         st.dataframe(score_df[show_cols].sort_values("score", ascending=False).head(10), use_container_width=True)
+
+    st.divider()
+    st.subheader("高质量样本导出")
+    st.caption("用于改善生成样本的展示观感：先多生成候选样本，再按清晰度、灰度对比和亮度范围优选，可选真实统计匹配。正式论文指标仍建议重新做下游验证。")
+    export_profile = st.selectbox(
+        "导出策略",
+        ["平衡模式（推荐）", "训练优先（少后处理）", "展示优先（纹理更明显）"],
+        index=0,
+        help="平衡模式适合答辩展示和后续训练预览；展示优先会增强纹理，但不建议直接替代正式实验结果。",
+    )
+    profile_settings = {
+        "训练优先（少后处理）": {"truncation": 0.95, "oversample": 2, "refine": False, "std_scale": 0.80, "clahe": 0.0, "sharpen": 0.0},
+        "平衡模式（推荐）": {"truncation": 0.85, "oversample": 3, "refine": True, "std_scale": 0.85, "clahe": 0.8, "sharpen": 0.08},
+        "展示优先（纹理更明显）": {"truncation": 0.80, "oversample": 4, "refine": True, "std_scale": 0.90, "clahe": 1.2, "sharpen": 0.15},
+    }
+    selected_profile = profile_settings[export_profile]
+    exp_col1, exp_col2, exp_col3 = st.columns(3)
+    with exp_col1:
+        checkpoint_path = st.text_input("Checkpoint路径", value=os.path.join(active_dir, "checkpoint_latest.pth"))
+    with exp_col2:
+        export_output_dir = st.text_input("导出目录", value=os.path.join(active_dir, "export_quality_selected"))
+    with exp_col3:
+        export_samples_per_class = st.number_input("每类导出数量", min_value=1, max_value=500, value=50, step=10)
+
+    adv_col1, adv_col2, adv_col3 = st.columns(3)
+    with adv_col1:
+        export_truncation = st.slider("潜变量截断", 0.50, 1.20, float(selected_profile["truncation"]), 0.05)
+    with adv_col2:
+        export_oversample = st.number_input("候选倍数", min_value=1, max_value=8, value=int(selected_profile["oversample"]), step=1)
+    with adv_col3:
+        export_refine = st.checkbox("真实统计匹配", value=bool(selected_profile["refine"]))
+
+    refine_real_dir = st.text_input("真实样本统计目录", value=processed_dir)
+    if st.button("导出高质量生成样本"):
+        if not os.path.exists(checkpoint_path):
+            st.error(f"Checkpoint 不存在：{checkpoint_path}")
+        else:
+            try:
+                raw_export_dir = export_output_dir
+                summary = export_generated_samples(
+                    checkpoint_path=checkpoint_path,
+                    output_dir=raw_export_dir,
+                    samples_per_class=int(export_samples_per_class),
+                    image_size=int(image_size),
+                    batch_size=int(batch_size),
+                    truncation=float(export_truncation),
+                    oversample_factor=int(export_oversample),
+                    quality_select=True,
+                )
+                final_dir = raw_export_dir
+                refine_summary = None
+                if export_refine:
+                    refined_dir = f"{raw_export_dir}_refined"
+                    refine_summary = refine_generated_samples(
+                        generated_dir=raw_export_dir,
+                        output_dir=refined_dir,
+                        real_dir=refine_real_dir if os.path.exists(refine_real_dir) else None,
+                        target_std_scale=float(selected_profile["std_scale"]),
+                        clahe_clip=float(selected_profile["clahe"]),
+                        sharpen_amount=float(selected_profile["sharpen"]),
+                    )
+                    final_dir = refined_dir
+                st.success(f"导出完成：{final_dir}")
+                st.json(
+                    {
+                        "export": {
+                            "written": summary["written"],
+                            "truncation": summary["truncation"],
+                            "oversample_factor": summary["oversample_factor"],
+                            "quality_select": summary["quality_select"],
+                        },
+                        "refine": {
+                            "enabled": export_refine,
+                            "output_dir": final_dir,
+                            "classes": list((refine_summary or {}).get("classes", {}).keys())[:6],
+                        },
+                    }
+                )
+                preview_files = []
+                for root, _, files in os.walk(final_dir):
+                    for file in files:
+                        if file.lower().endswith((".png", ".jpg", ".jpeg")):
+                            preview_files.append(os.path.join(root, file))
+                    if len(preview_files) >= 8:
+                        break
+                if preview_files:
+                    cols = st.columns(4)
+                    for idx, path in enumerate(preview_files[:8]):
+                        with cols[idx % 4]:
+                            st.image(path, caption=Path(path).parent.name, use_container_width=True)
+            except Exception as exc:
+                st.error(f"导出失败：{exc}")
 
     st.divider()
     st.subheader("指定 Epoch 浏览")

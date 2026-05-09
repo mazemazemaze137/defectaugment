@@ -28,6 +28,7 @@ from src.evaluate.build_reproducibility_manifest import build_manifest as build_
 from src.evaluate.industrial_readiness import analyze_industrial_readiness, parse_severity_overrides
 from src.evaluate.make_evidence_figures import create_evidence_figures
 from src.evaluate.metrics import evaluate_generated_dataset
+from src.evaluate.smoke_check import run_smoke_check
 
 
 GAN_METHOD = "深度学习增强 (GAN)"
@@ -386,6 +387,14 @@ if module == "答辩材料与健康检查":
             st.error(f"复现清单生成失败：{exc}")
         else:
             st.success(f"已更新：{output}")
+
+    if st.button("运行答辩烟测"):
+        result = run_smoke_check()
+        if result["passed"]:
+            st.success("烟测通过：关键文档、图表、实验结果和 CUDA 状态均满足当前检查条件。")
+        else:
+            st.error("烟测未通过：请查看下方失败项。")
+        st.dataframe(pd.DataFrame(result["checks"]), use_container_width=True, hide_index=True)
 
     st.subheader("答辩文档")
     doc_options = {

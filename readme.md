@@ -53,6 +53,9 @@ python -m src.evaluate.build_defense_summary --output docs/defense_summary.md
 # 生成复现环境清单
 python -m src.evaluate.build_reproducibility_manifest --output docs/reproducibility_manifest.md
 
+# 答辩前烟测：检查关键文档、图表、实验结果、论文长度和 CUDA 状态
+python -m src.evaluate.smoke_check --output docs/smoke_check.json
+
 # 从分类验证结果生成工业应用就绪度报告
 python -m src.evaluate.industrial_readiness --result-dir results/ablation_earlystop/cgan_v2_40ep_filtered_300 --output-dir results/industrial_readiness/cgan_v2_40ep --min-best-accuracy 0.98 --min-class-recall 0.95 --max-weighted-error 0.06
 

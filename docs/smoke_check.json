@@ -1,0 +1,80 @@
+{
+  "passed": true,
+  "checks": [
+    {
+      "name": "毕业论文_初稿.md",
+      "passed": true,
+      "detail": "exists"
+    },
+    {
+      "name": "readme.md",
+      "passed": true,
+      "detail": "exists"
+    },
+    {
+      "name": "docs\\defense_summary.md",
+      "passed": true,
+      "detail": "exists"
+    },
+    {
+      "name": "docs\\defense_demo_checklist.md",
+      "passed": true,
+      "detail": "exists"
+    },
+    {
+      "name": "docs\\reproducibility_manifest.md",
+      "passed": true,
+      "detail": "exists"
+    },
+    {
+      "name": "assets\\figures\\pitted_surface_refinement_grid.png",
+      "passed": true,
+      "detail": "image 1800x1296, std=52.56"
+    },
+    {
+      "name": "assets\\figures\\ratio_ablation_cgan_v2_40ep.png",
+      "passed": true,
+      "detail": "image 1764x864, std=38.31"
+    },
+    {
+      "name": "assets\\figures\\multiseed_cgan_v2_600.png",
+      "passed": true,
+      "detail": "image 1980x792, std=69.10"
+    },
+    {
+      "name": "assets\\figures\\industrial_gate_comparison.png",
+      "passed": true,
+      "detail": "image 2070x756, std=73.13"
+    },
+    {
+      "name": "assets\\figures\\system_workflow_industrial.png",
+      "passed": true,
+      "detail": "image 2160x972, std=35.99"
+    },
+    {
+      "name": "results\\ratio_ablation\\cgan_v2_40ep_seed42\\ratio_ablation_summary.csv",
+      "passed": true,
+      "detail": "exists"
+    },
+    {
+      "name": "results\\multiseed\\cgan_v2_40ep_600\\multiseed_summary.csv",
+      "passed": true,
+      "detail": "exists"
+    },
+    {
+      "name": "results\\industrial_readiness\\cgan_v2_40ep_600_seed42\\industrial_readiness.json",
+      "passed": true,
+      "detail": "exists"
+    },
+    {
+      "name": "thesis_length",
+      "passed": true,
+      "detail": "33537 chars >= 15000"
+    },
+    {
+      "name": "cuda_available",
+      "passed": true,
+      "detail": "NVIDIA GeForce RTX 3070"
+    }
+  ]
+}

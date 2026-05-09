@@ -348,12 +348,8 @@ def _save_multiseed_600_plot(output_dir):
     plt.close(fig)
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Create thesis evidence figures from experiment outputs.")
-    parser.add_argument("--output-dir", default="assets/figures")
-    args = parser.parse_args()
-
-    output_dir = Path(args.output_dir)
+def create_evidence_figures(output_dir="assets/figures"):
+    output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     _save_sample_grid(output_dir)
     _save_history_plot(output_dir)
@@ -362,7 +358,14 @@ def main():
     _save_ratio_ablation_plot(output_dir)
     _save_industrial_gate_comparison(output_dir)
     _save_multiseed_600_plot(output_dir)
-    print(json.dumps({"output_dir": str(output_dir), "figures": sorted(p.name for p in output_dir.glob("*.png"))}, ensure_ascii=False, indent=2))
+    return {"output_dir": str(output_dir), "figures": sorted(p.name for p in output_dir.glob("*.png"))}
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Create thesis evidence figures from experiment outputs.")
+    parser.add_argument("--output-dir", default="assets/figures")
+    args = parser.parse_args()
+    print(json.dumps(create_evidence_figures(args.output_dir), ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

@@ -1,10 +1,12 @@
 import os
+import json
 import re
 import shutil
 import sys
 import threading
 from datetime import datetime
 from itertools import combinations
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -21,7 +23,10 @@ from src.dataset_loader import (
     load_and_preprocess_dataset_from_annotations,
 )
 from src.evaluate.classifier_validation import parse_class_weights, run_classification_validation
+from src.evaluate.build_defense_summary import build_summary as build_defense_summary
+from src.evaluate.build_reproducibility_manifest import build_manifest as build_reproducibility_manifest
 from src.evaluate.industrial_readiness import analyze_industrial_readiness, parse_severity_overrides
+from src.evaluate.make_evidence_figures import create_evidence_figures
 from src.evaluate.metrics import evaluate_generated_dataset
 
 
@@ -61,6 +66,45 @@ def _device_label():
     if torch.cuda.is_available():
         return f"CUDA: {torch.cuda.get_device_name(0)}"
     return "CPU"
+
+
+def _read_text_file(path, max_chars=12000):
+    path = Path(path)
+    if not path.exists():
+        return ""
+    text = path.read_text(encoding="utf-8", errors="replace")
+    if len(text) > max_chars:
+        return text[:max_chars] + "\n\n...（内容较长，已截断预览）"
+    return text
+
+
+def _path_status(path):
+    path = Path(path)
+    if path.exists():
+        if path.is_dir():
+            count = sum(1 for _ in path.rglob("*") if _.is_file())
+            return "存在", f"{count} 个文件"
+        return "存在", f"{path.stat().st_size / 1024:.1f} KB"
+    return "缺失", "-"
+
+
+def _health_rows():
+    rows = []
+    checks = [
+        ("训练集", "data/raw/NEU-DET/train/images"),
+        ("验证集", "data/raw/NEU-DET/validation/images"),
+        ("40轮cGAN-v2导出样本", "results/cgan_v2_roi_40ep/export_100_per_class"),
+        ("600张GAN子集", "results/ratio_ablation/cgan_v2_40ep_seed42/subsets/gan_100_per_class"),
+        ("比例消融结果", "results/ratio_ablation/cgan_v2_40ep_seed42/ratio_ablation_summary.csv"),
+        ("600张多种子结果", "results/multiseed/cgan_v2_40ep_600/multiseed_summary.csv"),
+        ("答辩汇总", "docs/defense_summary.md"),
+        ("复现环境清单", "docs/reproducibility_manifest.md"),
+        ("答辩演示清单", "docs/defense_demo_checklist.md"),
+    ]
+    for name, path in checks:
+        status, detail = _path_status(path)
+        rows.append({"项目": name, "路径": path, "状态": status, "详情": detail})
+    return rows
 
 
 def _pick_folder_via_dialog(initial_dir):
@@ -289,7 +333,91 @@ if st.session_state.dialog_error:
     st.sidebar.warning(st.session_state.dialog_error)
     st.session_state.dialog_error = ""
 
-module = st.sidebar.radio("功能模块", ("数据增强训练", "数据质量评估", "下游分类验证", "工业应用评估"))
+module = st.sidebar.radio(
+    "功能模块",
+    ("数据增强训练", "数据质量评估", "下游分类验证", "工业应用评估", "答辩材料与健康检查"),
+)
+
+if module == "答辩材料与健康检查":
+    st.header("答辩材料与健康检查")
+    st.caption("集中查看关键实验结论、复现环境、答辩演示清单和系统路径状态，适合答辩前快速自检。")
+
+    health_df = pd.DataFrame(_health_rows())
+    ok_count = int((health_df["状态"] == "存在").sum())
+    total_count = len(health_df)
+    cuda_text = _device_label()
+    git_commit = ""
+    manifest_path = Path("docs/reproducibility_manifest.json")
+    if manifest_path.exists():
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            git_commit = manifest.get("git_commit", "")
+        except Exception:
+            git_commit = ""
+
+    metric_cols = st.columns(4)
+    metric_cols[0].metric("健康检查", f"{ok_count}/{total_count}")
+    metric_cols[1].metric("训练设备", cuda_text)
+    metric_cols[2].metric("论文字符数", len(_read_text_file("毕业论文_初稿.md", max_chars=200000)))
+    metric_cols[3].metric("Git提交", git_commit or "未生成")
+
+    st.subheader("关键路径状态")
+    st.dataframe(health_df, use_container_width=True, hide_index=True)
+
+    action_cols = st.columns(3)
+    if action_cols[0].button("重新生成证据图"):
+        try:
+            result = create_evidence_figures("assets/figures")
+        except Exception as exc:
+            st.error(f"证据图生成失败：{exc}")
+        else:
+            st.success(f"已生成 {len(result['figures'])} 张证据图。")
+    if action_cols[1].button("重新生成答辩汇总"):
+        try:
+            output = build_defense_summary("docs/defense_summary.md")
+        except Exception as exc:
+            st.error(f"答辩汇总生成失败：{exc}")
+        else:
+            st.success(f"已更新：{output}")
+    if action_cols[2].button("重新生成复现清单"):
+        try:
+            output = build_reproducibility_manifest("docs/reproducibility_manifest.md")
+        except Exception as exc:
+            st.error(f"复现清单生成失败：{exc}")
+        else:
+            st.success(f"已更新：{output}")
+
+    st.subheader("答辩文档")
+    doc_options = {
+        "答辩实验汇总": "docs/defense_summary.md",
+        "答辩演示流程清单": "docs/defense_demo_checklist.md",
+        "复现环境清单": "docs/reproducibility_manifest.md",
+        "论文初稿": "毕业论文_初稿.md",
+    }
+    selected_doc = st.selectbox("选择文档", list(doc_options.keys()))
+    selected_path = doc_options[selected_doc]
+    text = _read_text_file(selected_path)
+    if text:
+        st.markdown(text)
+    else:
+        st.warning(f"文档不存在：{selected_path}")
+
+    st.subheader("核心证据图")
+    figure_paths = [
+        ("困难类别样本对比", "assets/figures/pitted_surface_refinement_grid.png"),
+        ("生成比例消融", "assets/figures/ratio_ablation_cgan_v2_40ep.png"),
+        ("600张多种子复验", "assets/figures/multiseed_cgan_v2_600.png"),
+        ("工业门槛对比", "assets/figures/industrial_gate_comparison.png"),
+        ("系统闭环流程", "assets/figures/system_workflow_industrial.png"),
+    ]
+    fig_tabs = st.tabs([name for name, _ in figure_paths])
+    for tab, (name, path) in zip(fig_tabs, figure_paths):
+        with tab:
+            if os.path.exists(path):
+                st.image(path, caption=name, use_container_width=True)
+            else:
+                st.warning(f"图片不存在：{path}")
+    st.stop()
 
 if module == "数据质量评估":
     st.header("数据质量评估")

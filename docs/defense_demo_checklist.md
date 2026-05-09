@@ -27,6 +27,7 @@
 - `assets/figures/industrial_gate_comparison.png`：说明 300 张方案未通过，600 张方案通过工业门槛。
 - `assets/figures/system_workflow_industrial.png`：用作总结页，强调系统闭环。
 - `docs/reproducibility_manifest.md`：被问到运行环境时展示，说明 CUDA、PyTorch、依赖版本和 Git 提交。
+- `docs/classifier_model_comparison_cgan_v2_600_seed42.md`：被问到“是否只验证了一个分类器”时展示，说明系统已支持 ResNet18/MobileNet 对比。
 
 ## 4. 导师可能追问与回答要点
 

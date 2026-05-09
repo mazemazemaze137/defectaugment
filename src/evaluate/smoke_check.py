@@ -15,6 +15,7 @@ REQUIRED_PATHS = [
     "docs/defense_summary.md",
     "docs/defense_demo_checklist.md",
     "docs/reproducibility_manifest.md",
+    "docs/classifier_model_comparison_cgan_v2_600_seed42.md",
     "src/evaluate/detection_validation.py",
     "src/evaluate/run_classifier_model_comparison.py",
     "assets/figures/pitted_surface_refinement_grid.png",

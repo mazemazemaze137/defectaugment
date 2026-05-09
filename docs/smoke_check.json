@@ -27,6 +27,11 @@
       "detail": "exists"
     },
     {
+      "name": "docs\\classifier_model_comparison_cgan_v2_600_seed42.md",
+      "passed": true,
+      "detail": "exists"
+    },
+    {
       "name": "src\\evaluate\\detection_validation.py",
       "passed": true,
       "detail": "exists"

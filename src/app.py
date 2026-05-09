@@ -404,6 +404,7 @@ if module == "答辩材料与健康检查":
         "答辩实验汇总": "docs/defense_summary.md",
         "答辩演示流程清单": "docs/defense_demo_checklist.md",
         "复现环境清单": "docs/reproducibility_manifest.md",
+        "分类器模型对比": "docs/classifier_model_comparison_cgan_v2_600_seed42.md",
         "论文初稿": "毕业论文_初稿.md",
     }
     selected_doc = st.selectbox("选择文档", list(doc_options.keys()))

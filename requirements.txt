@@ -10,3 +10,5 @@ tqdm
 pytorch-fid
 streamlit
 pandas
+python-docx
+pymupdf

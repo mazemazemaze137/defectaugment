@@ -13,6 +13,11 @@ def parse_args():
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--nz", type=int, default=100)
     parser.add_argument("--class-names", nargs="*", default=None)
+    parser.add_argument("--truncation", type=float, default=1.0, help="Noise scale. Lower values usually make samples smoother and more stable.")
+    parser.add_argument("--oversample-factor", type=int, default=1, help="Generate N times more candidates per class before quality selection.")
+    parser.add_argument("--quality-select", action="store_true", help="Select generated samples by sharpness, contrast and brightness statistics.")
+    parser.add_argument("--min-mean", type=float, default=15.0)
+    parser.add_argument("--max-mean", type=float, default=240.0)
     return parser.parse_args()
 
 
@@ -26,6 +31,11 @@ def main():
         nz=args.nz,
         image_size=args.image_size,
         batch_size=args.batch_size,
+        truncation=args.truncation,
+        oversample_factor=args.oversample_factor,
+        quality_select=args.quality_select,
+        min_mean=args.min_mean,
+        max_mean=args.max_mean,
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 

@@ -534,6 +534,11 @@ def export_generated_samples(
     nz=100,
     image_size=128,
     batch_size=64,
+    truncation=1.0,
+    oversample_factor=1,
+    quality_select=False,
+    min_mean=15.0,
+    max_mean=240.0,
 ):
     _validate_image_size(image_size)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -550,31 +555,64 @@ def export_generated_samples(
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    def to_uint8(tensor):
+        img = tensor.squeeze().numpy()
+        img = (img * 0.5 + 0.5) * 255.0
+        return np.clip(img, 0, 255).astype(np.uint8)
+
+    def score_image(img):
+        mean = float(np.mean(img))
+        std = float(np.std(img))
+        sharpness = float(cv2.Laplacian(img, cv2.CV_64F).var())
+        mean_penalty = 0.0 if min_mean <= mean <= max_mean else min(abs(mean - min_mean), abs(mean - max_mean)) * 0.2
+        score = sharpness + std * 2.0 - mean_penalty
+        return {"score": float(score), "mean": mean, "std": std, "sharpness": sharpness}
+
     written = 0
+    stats_summary = {}
     with torch.no_grad():
         for class_idx, class_name in enumerate(class_names):
             class_dir = output_dir / class_name
             class_dir.mkdir(parents=True, exist_ok=True)
-            remaining = samples_per_class
-            offset = 0
+            target = samples_per_class
+            candidates = []
+            total_to_generate = samples_per_class * max(1, int(oversample_factor)) if quality_select else samples_per_class
+            remaining = total_to_generate
             while remaining > 0:
                 current = min(batch_size, remaining)
-                noise = torch.randn(current, nz, 1, 1, device=device)
+                noise = torch.randn(current, nz, 1, 1, device=device) * float(truncation)
                 labels = torch.full((current,), class_idx, dtype=torch.long, device=device)
                 fake_imgs = net_g(noise, labels).cpu()
                 for i in range(current):
-                    img = fake_imgs[i].squeeze().numpy()
-                    img = (img * 0.5 + 0.5) * 255.0
-                    img = np.clip(img, 0, 255).astype(np.uint8)
-                    out_path = class_dir / f"{class_name}_gan_{offset + i:04d}.png"
-                    cv2.imwrite(str(out_path), img)
-                    written += 1
+                    img = to_uint8(fake_imgs[i])
+                    stats = score_image(img)
+                    candidates.append((img, stats))
                 remaining -= current
-                offset += current
-    return {
+            if quality_select:
+                candidates.sort(key=lambda item: item[1]["score"], reverse=True)
+            selected = candidates[:target]
+            for offset, (img, _) in enumerate(selected):
+                out_path = class_dir / f"{class_name}_gan_{offset:04d}.png"
+                cv2.imwrite(str(out_path), img)
+                written += 1
+            stats_summary[class_name] = {
+                "generated_candidates": len(candidates),
+                "selected": len(selected),
+                "avg_score": float(np.mean([stats["score"] for _, stats in selected])) if selected else 0.0,
+                "avg_sharpness": float(np.mean([stats["sharpness"] for _, stats in selected])) if selected else 0.0,
+                "avg_std": float(np.mean([stats["std"] for _, stats in selected])) if selected else 0.0,
+                "avg_mean": float(np.mean([stats["mean"] for _, stats in selected])) if selected else 0.0,
+            }
+    summary = {
         "output_dir": str(output_dir),
         "written": written,
         "samples_per_class": samples_per_class,
+        "truncation": truncation,
+        "oversample_factor": oversample_factor,
+        "quality_select": quality_select,
         "used_ema": "netG_ema_state" in checkpoint,
         "model_variant": checkpoint.get("model_variant", "legacy"),
+        "classes": stats_summary,
     }
+    (output_dir / "export_summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    return summary

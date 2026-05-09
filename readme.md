@@ -8,6 +8,7 @@ DefectAugment 是一个面向金属表面缺陷图像的毕业设计项目。系
 - 传统增强：支持旋转、翻转、亮度对比度扰动和噪声扰动，可按类别目录批量生成样本。
 - cGAN 生成式增强：按缺陷类别条件生成样本，采用 Upsample+Conv、LSGAN、谱归一化、AMP 和断点续训。
 - cGAN-v2 增强：支持 Projection Discriminator、Hinge Loss、DiffAugment 和 EMA 导出。
+- 生成样本导出优化：支持潜变量截断、多候选质量优选和真实类别统计匹配，提升生成图的展示稳定性和纹理一致性。
 - 质量评估：支持 SSIM、PSNR、FID，并可从定量角度分析生成样本质量。
 - 样本筛选：按清晰度、灰度方差和亮度阈值筛选生成样本，降低低质量样本进入下游训练的概率。
 - 样本后处理：支持按真实类别统计匹配生成图像亮度和对比度，改善困难类别纹理。
@@ -67,6 +68,9 @@ python -m src.evaluate.run_multiseed_validation --train-dir data/raw/NEU-DET/tra
 
 # 分类器模型对比，并导出低置信度样本
 python -m src.evaluate.run_classifier_model_comparison --train-dir data/raw/NEU-DET/train/images --val-dir data/raw/NEU-DET/validation/images --generated-dir results/ratio_ablation/cgan_v2_40ep_seed42/subsets/gan_100_per_class --output-dir results/classifier_model_comparison/cgan_v2_600 --models small_cnn resnet18 mobilenet_v3_small --epochs 20 --batch-size 16 --image-size 128 --early-stopping-patience 4
+
+# 生成样本模拟效果预览：普通导出 vs 质量优选 vs 真实统计匹配
+python -m src.evaluate.generation_quality_preview --checkpoint results/cgan_v2_roi_40ep/checkpoint_latest.pth --output-dir results/generation_quality_preview/cgan_v2_40ep_trunc085 --samples-per-class 12 --truncation 0.85 --oversample-factor 3 --preview-class pitted_surface
 
 # 目标检测验证 smoke；完整实验可去掉 max-train/max-val 并适当增加 epochs
 python -m src.evaluate.detection_validation --output-dir results/detection_validation/smoke --epochs 1 --batch-size 1 --image-size 256 --max-train 2 --max-val 2 --quiet

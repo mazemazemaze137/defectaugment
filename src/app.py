@@ -25,6 +25,7 @@ from src.dataset_loader import (
 from src.evaluate.classifier_validation import parse_class_weights, run_classification_validation
 from src.evaluate.build_defense_summary import build_summary as build_defense_summary
 from src.evaluate.build_reproducibility_manifest import build_manifest as build_reproducibility_manifest
+from src.evaluate.defense_demo_profile import DEMO_PROFILE, build_demo_profile
 from src.evaluate.detection_validation import run_detection_validation
 from src.evaluate.industrial_readiness import analyze_industrial_readiness, parse_severity_overrides
 from src.evaluate.make_evidence_figures import create_evidence_figures
@@ -102,6 +103,8 @@ def _health_rows():
         ("答辩汇总", "docs/defense_summary.md"),
         ("复现环境清单", "docs/reproducibility_manifest.md"),
         ("答辩演示清单", "docs/defense_demo_checklist.md"),
+        ("现场演示配置", "docs/defense_live_demo_profile.md"),
+        ("Word论文初稿", "毕业论文_初稿_格式化.docx"),
         ("目标检测验证脚本", "src/evaluate/detection_validation.py"),
         ("分类器模型对比脚本", "src/evaluate/run_classifier_model_comparison.py"),
     ]
@@ -368,7 +371,7 @@ if module == "答辩材料与健康检查":
     st.subheader("关键路径状态")
     st.dataframe(health_df, use_container_width=True, hide_index=True)
 
-    action_cols = st.columns(3)
+    action_cols = st.columns(4)
     if action_cols[0].button("重新生成证据图"):
         try:
             result = create_evidence_figures("assets/figures")
@@ -390,6 +393,13 @@ if module == "答辩材料与健康检查":
             st.error(f"复现清单生成失败：{exc}")
         else:
             st.success(f"已更新：{output}")
+    if action_cols[3].button("生成现场演示配置"):
+        try:
+            output = build_demo_profile()
+        except Exception as exc:
+            st.error(f"演示配置生成失败：{exc}")
+        else:
+            st.success(f"已更新：{output['markdown']}")
 
     if st.button("运行答辩烟测"):
         result = run_smoke_check()
@@ -403,6 +413,7 @@ if module == "答辩材料与健康检查":
     doc_options = {
         "答辩实验汇总": "docs/defense_summary.md",
         "答辩演示流程清单": "docs/defense_demo_checklist.md",
+        "答辩现场演示配置": "docs/defense_live_demo_profile.md",
         "复现环境清单": "docs/reproducibility_manifest.md",
         "分类器模型对比": "docs/classifier_model_comparison_cgan_v2_600_seed42.md",
         "论文初稿": "毕业论文_初稿.md",
@@ -435,6 +446,13 @@ if module == "答辩材料与健康检查":
 if module == "数据质量评估":
     st.header("数据质量评估")
     st.caption("对比真实样本与生成样本，计算 FID、SSIM 和 PSNR。FID 越低越好，SSIM/PSNR 越高越好。")
+    eval_demo_mode = st.checkbox(
+        "答辩演示模式（快速质量评估）",
+        value=False,
+        help="现场演示默认少量配对并跳过 FID；正式论文结果使用已保存的完整质量评估。",
+    )
+    if eval_demo_mode:
+        st.info("演示模式会降低配对数量并默认不计算 FID，适合现场快速展示评估入口。")
 
     eval_real_dir = st.text_input("真实数据集目录", value="data/processed/gui_temp")
     eval_generated_dir = st.text_input("生成数据集目录", value=st.session_state.output_path)
@@ -443,11 +461,17 @@ if module == "数据质量评估":
     with col_a:
         eval_image_size = st.number_input("SSIM/PSNR 图像尺寸", min_value=64, max_value=512, value=256, step=32)
     with col_b:
-        eval_max_pairs = st.number_input("SSIM/PSNR 最大配对数", min_value=10, max_value=2000, value=200, step=10)
+        eval_max_pairs = st.number_input(
+            "SSIM/PSNR 最大配对数",
+            min_value=10,
+            max_value=2000,
+            value=int(DEMO_PROFILE["live_demo"]["quality_eval_max_pairs"]) if eval_demo_mode else 200,
+            step=10,
+        )
     with col_c:
         eval_fid_batch = st.number_input("FID Batch Size", min_value=1, max_value=128, value=32, step=1)
 
-    eval_fid = st.checkbox("计算 FID（较慢，但论文价值最高）", value=True)
+    eval_fid = st.checkbox("计算 FID（较慢，但论文价值最高）", value=not eval_demo_mode)
 
     if st.button("开始评估", type="primary"):
         with st.spinner("正在计算质量指标..."):
@@ -489,6 +513,13 @@ if module == "数据质量评估":
 if module == "下游分类验证":
     st.header("下游分类验证")
     st.caption("训练一个轻量 CNN 分类器，用验证集准确率检验增强数据是否提升下游任务效果。")
+    cls_demo_mode = st.checkbox(
+        "答辩演示模式（短轮次，只证明验证链路）",
+        value=False,
+        help="现场演示建议跑短轮次；正式结论使用已保存的 20 轮对比实验和多随机种子结果。",
+    )
+    if cls_demo_mode:
+        st.info("演示模式会把默认训练轮数降到 3 轮，并保留低置信度样本导出，用于现场快速证明分类验证流程可运行。")
 
     cls_train_dir = st.text_input("训练集目录", value="data/raw/NEU-DET/train/images")
     cls_val_dir = st.text_input("验证集目录", value="data/raw/NEU-DET/validation/images")
@@ -500,7 +531,13 @@ if module == "下游分类验证":
 
     cls_col1, cls_col2, cls_col3, cls_col4, cls_col5 = st.columns(5)
     with cls_col1:
-        cls_epochs = st.number_input("训练轮数", min_value=1, max_value=100, value=5, step=1)
+        cls_epochs = st.number_input(
+            "训练轮数",
+            min_value=1,
+            max_value=100,
+            value=int(DEMO_PROFILE["live_demo"]["classifier_epochs"]) if cls_demo_mode else 5,
+            step=1,
+        )
     with cls_col2:
         cls_batch_size = st.number_input("Batch Size", min_value=4, max_value=128, value=32, step=4)
     with cls_col3:
@@ -588,6 +625,13 @@ if module == "下游分类验证":
 if module == "目标检测验证":
     st.header("目标检测验证")
     st.caption("基于 NEU-DET XML 标注训练 Faster R-CNN MobileNet-FPN，输出 AP50、Precision 和 Recall。当前 GAN ROI 样本没有边界框标注，因此不直接加入检测训练。")
+    det_demo_mode = st.checkbox(
+        "答辩演示模式（小样本 smoke）",
+        value=True,
+        help="现场只验证 XML 读取、检测训练和指标输出链路；正式检测 mAP 可作为后续扩展。",
+    )
+    if det_demo_mode:
+        st.info("演示模式会限制训练/验证样本数并只跑 1 轮，避免现场检测训练耗时过长。")
 
     det_train_images = st.text_input("检测训练图像目录", value="data/raw/NEU-DET/train/images")
     det_train_ann = st.text_input("检测训练标注目录", value="data/raw/NEU-DET/train/annotations")
@@ -597,7 +641,13 @@ if module == "目标检测验证":
 
     det_col1, det_col2, det_col3, det_col4 = st.columns(4)
     with det_col1:
-        det_epochs = st.number_input("训练轮数", min_value=1, max_value=50, value=1, step=1)
+        det_epochs = st.number_input(
+            "训练轮数",
+            min_value=1,
+            max_value=50,
+            value=int(DEMO_PROFILE["live_demo"]["detector_epochs"]) if det_demo_mode else 3,
+            step=1,
+        )
     with det_col2:
         det_batch = st.selectbox("Batch Size", [1, 2, 4], index=1)
     with det_col3:
@@ -607,9 +657,21 @@ if module == "目标检测验证":
 
     det_limit_col1, det_limit_col2, det_limit_col3 = st.columns(3)
     with det_limit_col1:
-        det_max_train = st.number_input("最大训练样本（0为不限）", min_value=0, max_value=2000, value=80, step=20)
+        det_max_train = st.number_input(
+            "最大训练样本（0为不限）",
+            min_value=0,
+            max_value=2000,
+            value=int(DEMO_PROFILE["live_demo"]["detector_max_train"]) if det_demo_mode else 80,
+            step=20,
+        )
     with det_limit_col2:
-        det_max_val = st.number_input("最大验证样本（0为不限）", min_value=0, max_value=1000, value=40, step=20)
+        det_max_val = st.number_input(
+            "最大验证样本（0为不限）",
+            min_value=0,
+            max_value=1000,
+            value=int(DEMO_PROFILE["live_demo"]["detector_max_val"]) if det_demo_mode else 40,
+            step=10,
+        )
     with det_limit_col3:
         det_score = st.slider("预测分数阈值", 0.05, 0.95, 0.30, 0.05)
 
@@ -705,6 +767,13 @@ if method == TRADITIONAL_METHOD:
     output_dir = "results/gui_traditional"
 else:
     st.sidebar.subheader("GAN 训练参数")
+    gan_demo_mode = st.sidebar.checkbox(
+        "答辩演示模式（短训练）",
+        value=False,
+        help="现场只跑短训练证明流程；正式效果展示 40 轮 cGAN-v2 和保存的实验结果。",
+    )
+    if gan_demo_mode:
+        st.sidebar.info("演示模式建议只跑 3 轮，保存间隔为 1。现场不要用短训练结果代表最终生成质量。")
     image_size = st.sidebar.selectbox("训练分辨率", [128, 256], index=0)
     gan_variant_label = st.sidebar.selectbox(
         "GAN 模型版本",
@@ -739,12 +808,23 @@ else:
     else:
         st.sidebar.info("点击开始后会自动创建 `results/gan_run_时间戳` 目录。")
 
-    epochs = st.sidebar.number_input("训练轮数 (Epochs)", 10, 5000, 400, step=10)
+    epochs = st.sidebar.number_input(
+        "训练轮数 (Epochs)",
+        1,
+        5000,
+        int(DEMO_PROFILE["live_demo"]["gan_epochs"]) if gan_demo_mode else 400,
+        step=1 if gan_demo_mode else 10,
+    )
     batch_size = st.sidebar.selectbox("Batch Size", [2, 4, 8, 16], index=1)
     lr_g = st.sidebar.number_input("生成器学习率 (lr_g)", value=0.00010, format="%.5f")
     lr_d = st.sidebar.number_input("判别器学习率 (lr_d)", value=0.00010, format="%.5f")
-    save_int = st.sidebar.number_input("保存间隔 (Epochs)", 1, 100, 10)
-    num_preview = st.sidebar.number_input("每类保存样本数", 1, 16, 8)
+    save_int = st.sidebar.number_input(
+        "保存间隔 (Epochs)",
+        1,
+        100,
+        int(DEMO_PROFILE["live_demo"]["gan_save_interval"]) if gan_demo_mode else 10,
+    )
+    num_preview = st.sidebar.number_input("每类保存样本数", 1, 16, 4 if gan_demo_mode else 8)
 
 is_running = bool(
     st.session_state.gan_thread is not None

@@ -143,7 +143,7 @@ def add_image(doc: Document, caption: str, rel_path: str, fig_no: int) -> int:
     p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
     run = p.add_run()
-    run.add_picture(str(image_path), width=Inches(5.7))
+    run.add_picture(str(image_path), width=Inches(6.0))
     cap = doc.add_paragraph()
     cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
     cap.paragraph_format.space_after = Pt(6)

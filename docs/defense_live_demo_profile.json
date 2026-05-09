@@ -1,0 +1,67 @@
+{
+  "name": "DefectAugment defense live demo profile",
+  "purpose": "Use short live runs to prove the pipeline, and use saved formal results to prove model quality.",
+  "live_demo": {
+    "gan_epochs": 3,
+    "gan_image_size": 128,
+    "gan_save_interval": 1,
+    "classifier_epochs": 3,
+    "detector_epochs": 1,
+    "detector_max_train": 20,
+    "detector_max_val": 10,
+    "quality_eval_max_pairs": 80,
+    "quality_eval_fid": false
+  },
+  "formal_results": {
+    "cgan_v2_40ep_fid": 178.41,
+    "ratio_ablation_best": "600 generated samples, best validation accuracy 99.72%, final validation accuracy 98.61%",
+    "multiseed_best": "cGAN-v2 600 samples average best validation accuracy 99.44%, baseline 98.15%",
+    "industrial_gate": "600-sample setting passed: min recall 98.33%, cost-weighted error 0.29%",
+    "classifier_comparison": "small_cnn 96.11%, mobilenet_v3_small 95.56%, resnet18 93.33% in the formal backbone comparison run"
+  },
+  "evidence_paths": {
+    "demo_checklist": "docs/defense_demo_checklist.md",
+    "defense_summary": "docs/defense_summary.md",
+    "formatted_thesis": "毕业论文_初稿_格式化.docx",
+    "ratio_ablation_figure": "assets/figures/ratio_ablation_cgan_v2_40ep.png",
+    "multiseed_figure": "assets/figures/multiseed_cgan_v2_600.png",
+    "industrial_gate_figure": "assets/figures/industrial_gate_comparison.png",
+    "classifier_comparison": "docs/classifier_model_comparison_cgan_v2_600_seed42.md"
+  },
+  "talk_track": [
+    "现场短轮次训练用于展示数据读取、ROI 预处理、GPU 调用、Loss 曲线、断点续训和文件输出。",
+    "正式生成效果不依赖现场随机训练，而是展示 40 轮 cGAN-v2 模型、质量指标、比例消融和多随机种子验证。",
+    "若老师要求看完整训练，可说明完整实验已保存 checkpoint、summary、曲线和证据图，现场重新训练会浪费答辩时间。",
+    "目标检测验证当前证明 XML 标注读取和检测训练链路可运行；GAN ROI 样本没有 bbox，因此不直接混入检测训练。"
+  ],
+  "checked_evidence_paths": {
+    "demo_checklist": {
+      "path": "docs/defense_demo_checklist.md",
+      "state": "exists"
+    },
+    "defense_summary": {
+      "path": "docs/defense_summary.md",
+      "state": "exists"
+    },
+    "formatted_thesis": {
+      "path": "毕业论文_初稿_格式化.docx",
+      "state": "exists"
+    },
+    "ratio_ablation_figure": {
+      "path": "assets/figures/ratio_ablation_cgan_v2_40ep.png",
+      "state": "exists"
+    },
+    "multiseed_figure": {
+      "path": "assets/figures/multiseed_cgan_v2_600.png",
+      "state": "exists"
+    },
+    "industrial_gate_figure": {
+      "path": "assets/figures/industrial_gate_comparison.png",
+      "state": "exists"
+    },
+    "classifier_comparison": {
+      "path": "docs/classifier_model_comparison_cgan_v2_600_seed42.md",
+      "state": "exists"
+    }
+  }
+}

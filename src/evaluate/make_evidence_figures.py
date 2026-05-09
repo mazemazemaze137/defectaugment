@@ -1,14 +1,28 @@
-import argparse
+﻿import argparse
 import csv
 import json
 from pathlib import Path
 
 import cv2
 import matplotlib.pyplot as plt
+from matplotlib import font_manager
 import numpy as np
 
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
+
+
+def _setup_chinese_font():
+    candidates = ["Microsoft YaHei", "SimHei", "SimSun", "Noto Sans CJK SC"]
+    available = {font.name for font in font_manager.fontManager.ttflist}
+    for name in candidates:
+        if name in available:
+            plt.rcParams["font.sans-serif"] = [name]
+            break
+    plt.rcParams["axes.unicode_minus"] = False
+
+
+_setup_chinese_font()
 
 
 def _image_files(folder):
@@ -30,10 +44,10 @@ def _read_gray(path, size=128):
 
 def _save_sample_grid(output_dir):
     groups = [
-        ("Real ROI", Path("data/processed/gui_temp/pitted_surface")),
-        ("20ep raw cGAN-v2", Path("results/cgan_v2_roi_20ep/export_100_per_class/pitted_surface")),
-        ("20ep refined", Path("results/cgan_v2_roi_20ep/export_refined_pitted_filtered_50/pitted_surface")),
-        ("40ep filtered", Path("results/cgan_v2_roi_40ep/export_filtered_50_per_class/pitted_surface")),
+        ("真实ROI样本", Path("data/processed/gui_temp/pitted_surface")),
+        ("20轮原始生成", Path("results/cgan_v2_roi_20ep/export_100_per_class/pitted_surface")),
+        ("20轮后处理筛选", Path("results/cgan_v2_roi_20ep/export_refined_pitted_filtered_50/pitted_surface")),
+        ("40轮筛选结果", Path("results/cgan_v2_roi_40ep/export_filtered_50_per_class/pitted_surface")),
     ]
 
     rows = []
@@ -52,9 +66,16 @@ def _save_sample_grid(output_dir):
             ax.set_yticks([])
             if col_idx == 0:
                 ax.set_ylabel(title, fontsize=10)
-    fig.suptitle("pitted_surface sample comparison", fontsize=14, fontweight="bold")
-    fig.tight_layout(rect=(0, 0, 1, 0.96))
-    fig.savefig(output_dir / "pitted_surface_refinement_grid.png", dpi=180)
+    fig.suptitle("麻点缺陷样本对比：真实ROI、早期生成、后处理筛选与40轮结果", fontsize=14, fontweight="bold")
+    fig.text(
+        0.5,
+        0.018,
+        "说明：每行展示同一类别的5个样本，用于观察纹理清晰度、灰度对比度和生成样本多样性。",
+        ha="center",
+        fontsize=9,
+    )
+    fig.tight_layout(rect=(0, 0.04, 1, 0.95))
+    fig.savefig(output_dir / "pitted_surface_refinement_grid.png", dpi=180, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -70,10 +91,10 @@ def _read_history(path):
 
 def _save_history_plot(output_dir):
     experiments = [
-        ("Base", "results/ablation_earlystop/base/history.csv"),
-        ("Traditional 600", "results/ablation_earlystop/traditional_600/history.csv"),
-        ("cGAN-v2 20ep adaptive", "results/ablation_earlystop/cgan_v2_adaptive_300/history.csv"),
-        ("cGAN-v2 40ep filtered", "results/ablation_earlystop/cgan_v2_40ep_filtered_300/history.csv"),
+        ("原始基线", "results/ablation_earlystop/base/history.csv"),
+        ("传统增强600张", "results/ablation_earlystop/traditional_600/history.csv"),
+        ("cGAN-v2 20轮自适应筛选", "results/ablation_earlystop/cgan_v2_adaptive_300/history.csv"),
+        ("cGAN-v2 40轮筛选", "results/ablation_earlystop/cgan_v2_40ep_filtered_300/history.csv"),
     ]
     fig, axes = plt.subplots(1, 2, figsize=(11, 4.2))
     for label, path in experiments:
@@ -83,17 +104,17 @@ def _save_history_plot(output_dir):
         axes[0].plot(history["epoch"], history["val_accuracy"], marker="o", linewidth=1.8, label=label)
         axes[1].plot(history["epoch"], history["val_loss"], marker="o", linewidth=1.8, label=label)
 
-    axes[0].set_title("Validation accuracy")
-    axes[0].set_xlabel("Epoch")
-    axes[0].set_ylabel("Accuracy (%)")
+    axes[0].set_title("验证准确率变化")
+    axes[0].set_xlabel("训练轮数")
+    axes[0].set_ylabel("准确率（%）")
     axes[0].grid(alpha=0.25)
-    axes[1].set_title("Validation loss")
-    axes[1].set_xlabel("Epoch")
-    axes[1].set_ylabel("Loss")
+    axes[1].set_title("验证损失变化")
+    axes[1].set_xlabel("训练轮数")
+    axes[1].set_ylabel("损失值")
     axes[1].grid(alpha=0.25)
     axes[1].legend(loc="best", fontsize=8)
     fig.tight_layout()
-    fig.savefig(output_dir / "classifier_history_comparison.png", dpi=180)
+    fig.savefig(output_dir / "classifier_history_comparison.png", dpi=180, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -103,10 +124,10 @@ def _load_summary(path):
 
 def _save_result_bars(output_dir):
     experiments = [
-        ("Base", "results/ablation_earlystop/base/summary.json"),
-        ("cGAN-v2 20ep", "results/ablation_earlystop/cgan_v2_adaptive_300/summary.json"),
-        ("cGAN-v2 40ep", "results/ablation_earlystop/cgan_v2_40ep_filtered_300/summary.json"),
-        ("Traditional", "results/ablation_earlystop/traditional_600/summary.json"),
+        ("原始基线", "results/ablation_earlystop/base/summary.json"),
+        ("cGAN-v2 20轮", "results/ablation_earlystop/cgan_v2_adaptive_300/summary.json"),
+        ("cGAN-v2 40轮", "results/ablation_earlystop/cgan_v2_40ep_filtered_300/summary.json"),
+        ("传统增强", "results/ablation_earlystop/traditional_600/summary.json"),
     ]
 
     labels = []
@@ -122,8 +143,8 @@ def _save_result_bars(output_dir):
 
     x = np.arange(len(labels))
     fig, ax1 = plt.subplots(figsize=(9.5, 4.5))
-    bars = ax1.bar(x - 0.18, best_acc, width=0.36, color="#2f6f73", label="Best val acc")
-    ax1.set_ylabel("Best accuracy (%)")
+    bars = ax1.bar(x - 0.18, best_acc, width=0.36, color="#2f6f73", label="最佳验证准确率")
+    ax1.set_ylabel("最佳准确率（%）")
     ax1.set_ylim(max(80, min(best_acc) - 5), 100)
     ax1.set_xticks(x)
     ax1.set_xticklabels(labels)
@@ -132,61 +153,61 @@ def _save_result_bars(output_dir):
         ax1.text(bar.get_x() + bar.get_width() / 2, value + 0.15, f"{value:.2f}%", ha="center", fontsize=8)
 
     ax2 = ax1.twinx()
-    ax2.plot(x + 0.18, best_loss, color="#b65f2a", marker="o", linewidth=2, label="Best val loss")
-    ax2.set_ylabel("Best loss")
+    ax2.plot(x + 0.18, best_loss, color="#b65f2a", marker="o", linewidth=2, label="最佳验证损失")
+    ax2.set_ylabel("最佳损失")
     for idx, value in enumerate(best_loss):
         ax2.text(idx + 0.18, value + 0.006, f"{value:.3f}", ha="center", fontsize=8, color="#7d3f1c")
 
     lines, line_labels = ax1.get_legend_handles_labels()
     lines2, line_labels2 = ax2.get_legend_handles_labels()
     ax1.legend(lines + lines2, line_labels + line_labels2, loc="lower right", fontsize=8)
+    ax1.set_title("不同增强方案的下游分类结果对比", fontsize=13, fontweight="bold")
     fig.tight_layout()
-    fig.savefig(output_dir / "experiment_result_bars.png", dpi=180)
+    fig.savefig(output_dir / "experiment_result_bars.png", dpi=180, bbox_inches="tight")
     plt.close(fig)
 
 
 def _save_system_workflow(output_dir):
     steps = [
-        ("NEU-DET\nraw images + XML", 0.08, 0.70),
-        ("ROI preprocessing\nCLAHE + denoise", 0.29, 0.70),
-        ("Augmentation\nTraditional / cGAN-v2", 0.50, 0.70),
-        ("Quality gate\nFID + SSIM + PSNR", 0.71, 0.70),
-        ("Sample filtering\nsharpness + std", 0.91, 0.70),
-        ("Classifier validation\nmulti-seed + early stop", 0.29, 0.28),
-        ("Industrial readiness\nrecall + risk cost", 0.55, 0.28),
-        ("Defense evidence\nfigures + reports", 0.80, 0.28),
+        ("NEU-DET数据\n原图+XML标注", 0.18, 0.78),
+        ("ROI预处理\nCLAHE+去噪", 0.50, 0.78),
+        ("数据增强\n传统增强/cGAN-v2", 0.82, 0.78),
+        ("质量评估\nFID+SSIM+PSNR", 0.82, 0.52),
+        ("样本筛选\n清晰度+灰度方差", 0.50, 0.52),
+        ("分类验证\n多随机种子+早停", 0.18, 0.52),
+        ("工业门槛\n召回率+风险代价", 0.18, 0.26),
+        ("答辩证据\n图表+报告+烟测", 0.50, 0.26),
     ]
     arrows = [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5), (5, 6), (6, 7)]
 
-    fig, ax = plt.subplots(figsize=(12, 5.4))
+    fig, ax = plt.subplots(figsize=(8.2, 5.6))
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
     ax.axis("off")
     box_style = dict(boxstyle="round,pad=0.35,rounding_size=0.04", facecolor="#eef5f5", edgecolor="#2f6f73", linewidth=1.8)
     for idx, (label, x, y) in enumerate(steps):
-        ax.text(x, y, label, ha="center", va="center", fontsize=10, bbox=box_style)
+        ax.text(x, y, label, ha="center", va="center", fontsize=12, bbox=box_style)
         if idx in {2, 6}:
-            ax.text(x, y - 0.15, "key defense point", ha="center", va="center", fontsize=8, color="#8b1e1e")
+            ax.text(x, y - 0.12, "答辩重点", ha="center", va="center", fontsize=9, color="#8b1e1e")
     for src, dst in arrows:
         x1, y1 = steps[src][1], steps[src][2]
         x2, y2 = steps[dst][1], steps[dst][2]
-        if (src, dst) == (4, 5):
-            ax.annotate(
-                "",
-                xy=(x2 + 0.13, y2 + 0.05),
-                xytext=(x1 - 0.05, y1 - 0.06),
-                arrowprops=dict(arrowstyle="->", lw=1.8, color="#4b5563", connectionstyle="angle3,angleA=-90,angleB=180"),
-            )
+        if abs(y2 - y1) < 0.02:
+            start = (x1 + (0.12 if x2 > x1 else -0.12), y1)
+            end = (x2 - (0.12 if x2 > x1 else -0.12), y2)
         else:
-            ax.annotate(
-                "",
-                xy=(x2 - 0.07 if x2 > x1 else x2, y2),
-                xytext=(x1 + 0.07 if x2 > x1 else x1, y1),
-                arrowprops=dict(arrowstyle="->", lw=1.8, color="#4b5563", connectionstyle="arc3,rad=0.08"),
-            )
-    ax.set_title("DefectAugment workflow for thesis defense and industrial evaluation", fontsize=14, fontweight="bold")
+            start = (x1, y1 - 0.08)
+            end = (x2, y2 + 0.08)
+        ax.annotate(
+            "",
+            xy=end,
+            xytext=start,
+            arrowprops=dict(arrowstyle="->", lw=1.9, color="#4b5563", connectionstyle="arc3,rad=0.08"),
+        )
+    ax.set_title("工业缺陷数据增强系统闭环流程", fontsize=16, fontweight="bold")
+    ax.text(0.5, 0.05, "说明：从真实缺陷数据出发，经过生成、筛选和下游验证，最终判断是否具备试运行价值。", ha="center", fontsize=10)
     fig.tight_layout()
-    fig.savefig(output_dir / "system_workflow_industrial.png", dpi=180)
+    fig.savefig(output_dir / "system_workflow_industrial.png", dpi=180, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -211,35 +232,36 @@ def _save_ratio_ablation_plot(output_dir):
 
     x = np.arange(len(samples))
     fig, ax1 = plt.subplots(figsize=(9.8, 4.8))
-    ax1.plot(x, best_acc, marker="o", linewidth=2.2, color="#206a5d", label="Best val accuracy")
-    ax1.plot(x, final_acc, marker="s", linewidth=2.0, color="#3867a6", label="Final val accuracy")
-    ax1.set_ylabel("Accuracy (%)")
+    ax1.plot(x, best_acc, marker="o", linewidth=2.2, color="#206a5d", label="最佳验证准确率")
+    ax1.plot(x, final_acc, marker="s", linewidth=2.0, color="#3867a6", label="最终验证准确率")
+    ax1.set_ylabel("准确率（%）")
     ax1.set_ylim(max(80, min(final_acc + best_acc) - 4), 100.5)
     ax1.set_xticks(x)
-    ax1.set_xticklabels([f"{sample}/class\n{total} total" for sample, total in zip(samples, total_samples)])
+    ax1.set_xticklabels([f"每类{sample}张\n共{total}张" for sample, total in zip(samples, total_samples)])
     ax1.grid(axis="y", alpha=0.25)
     for idx, value in enumerate(best_acc):
         ax1.text(idx, value + 0.18, f"{value:.2f}%", ha="center", fontsize=8, color="#17463e")
 
     ax2 = ax1.twinx()
-    ax2.plot(x, best_loss, marker="^", linewidth=2.0, color="#b65f2a", label="Best val loss")
-    ax2.set_ylabel("Loss")
+    ax2.plot(x, best_loss, marker="^", linewidth=2.0, color="#b65f2a", label="最佳验证损失")
+    ax2.set_ylabel("损失值")
     for idx, value in enumerate(best_loss):
         ax2.text(idx + 0.04, value + 0.004, f"{value:.3f}", ha="left", fontsize=8, color="#7d3f1c")
 
     lines, labels = ax1.get_legend_handles_labels()
     lines2, labels2 = ax2.get_legend_handles_labels()
     ax1.legend(lines + lines2, labels + labels2, loc="lower right", fontsize=8)
-    ax1.set_title("cGAN-v2 40ep generated sample ratio ablation", fontsize=13, fontweight="bold")
+    ax1.set_title("cGAN-v2 40轮生成样本加入比例消融", fontsize=13, fontweight="bold")
+    ax1.text(1.1, ax1.get_ylim()[0] + 0.6, "结论：每类100张方案准确率最高、损失最低", fontsize=9, color="#8b1e1e")
     fig.tight_layout()
-    fig.savefig(output_dir / "ratio_ablation_cgan_v2_40ep.png", dpi=180)
+    fig.savefig(output_dir / "ratio_ablation_cgan_v2_40ep.png", dpi=180, bbox_inches="tight")
     plt.close(fig)
 
 
 def _save_industrial_gate_comparison(output_dir):
     experiments = [
-        ("300 samples", Path("results/industrial_readiness/cgan_v2_40ep/industrial_readiness.json")),
-        ("600 samples", Path("results/industrial_readiness/cgan_v2_40ep_600_seed42/industrial_readiness.json")),
+        ("300张方案", Path("results/industrial_readiness/cgan_v2_40ep/industrial_readiness.json")),
+        ("600张方案", Path("results/industrial_readiness/cgan_v2_40ep_600_seed42/industrial_readiness.json")),
     ]
     labels = []
     best_acc = []
@@ -261,13 +283,13 @@ def _save_industrial_gate_comparison(output_dir):
     x = np.arange(len(labels))
     fig, axes = plt.subplots(1, 3, figsize=(11.5, 4.2))
     metrics = [
-        ("Best accuracy", best_acc, 98.0, ">=", "#206a5d"),
-        ("Min class recall", min_recall, 95.0, ">=", "#3867a6"),
-        ("Weighted error", weighted_error, 6.0, "<=", "#b65f2a"),
+        ("最佳准确率", best_acc, 98.0, "≥", "#206a5d"),
+        ("最低类别召回率", min_recall, 95.0, "≥", "#3867a6"),
+        ("代价加权错误率", weighted_error, 6.0, "≤", "#b65f2a"),
     ]
     for ax, (title, values, threshold, direction, color) in zip(axes, metrics):
         bars = ax.bar(x, values, color=color, alpha=0.88)
-        ax.axhline(threshold, color="#8b1e1e", linestyle="--", linewidth=1.4, label=f"gate {direction} {threshold:.0f}%")
+        ax.axhline(threshold, color="#8b1e1e", linestyle="--", linewidth=1.4, label=f"门槛 {direction} {threshold:.0f}%")
         ax.set_xticks(x)
         ax.set_xticklabels(labels)
         ax.set_title(title)
@@ -275,14 +297,14 @@ def _save_industrial_gate_comparison(output_dir):
         for bar, value in zip(bars, values):
             ax.text(bar.get_x() + bar.get_width() / 2, value + 0.4, f"{value:.2f}%", ha="center", fontsize=8)
         ax.legend(fontsize=7, loc="best")
-    axes[0].set_ylabel("Percent (%)")
+    axes[0].set_ylabel("百分比（%）")
     fig.suptitle(
-        f"Industrial readiness gate: {'PASS' if passed[-1] else 'REVIEW'} after ratio tuning",
+        f"工业应用门槛对比：比例调节后600张方案{'通过' if passed[-1] else '需复核'}",
         fontsize=13,
         fontweight="bold",
     )
     fig.tight_layout(rect=(0, 0, 1, 0.94))
-    fig.savefig(output_dir / "industrial_gate_comparison.png", dpi=180)
+    fig.savefig(output_dir / "industrial_gate_comparison.png", dpi=180, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -317,34 +339,34 @@ def _save_multiseed_600_plot(output_dir):
     x = np.arange(len(seeds))
     width = 0.34
     fig, axes = plt.subplots(1, 2, figsize=(11, 4.4))
-    axes[0].bar(x - width / 2, values["base"], width=width, color="#7a8b99", label="Base")
-    axes[0].bar(x + width / 2, values["augmented"], width=width, color="#206a5d", label="cGAN-v2 600")
+    axes[0].bar(x - width / 2, values["base"], width=width, color="#7a8b99", label="原始基线")
+    axes[0].bar(x + width / 2, values["augmented"], width=width, color="#206a5d", label="cGAN-v2增强600张")
     axes[0].set_xticks(x)
     axes[0].set_xticklabels([str(seed) for seed in seeds])
-    axes[0].set_ylabel("Best accuracy (%)")
+    axes[0].set_ylabel("最佳准确率（%）")
     axes[0].set_ylim(max(88, min(values["base"] + values["augmented"]) - 4), 100.8)
-    axes[0].set_title("Best validation accuracy by seed")
+    axes[0].set_title("不同随机种子下的最佳准确率")
     axes[0].grid(axis="y", alpha=0.25)
     axes[0].legend(fontsize=8, loc="lower right")
     for idx, seed in enumerate(seeds):
         axes[0].text(idx - width / 2, values["base"][idx] + 0.15, f"{values['base'][idx]:.2f}%", ha="center", fontsize=7)
         axes[0].text(idx + width / 2, values["augmented"][idx] + 0.15, f"{values['augmented'][idx]:.2f}%", ha="center", fontsize=7)
 
-    axes[1].bar(x - width / 2, losses["base"], width=width, color="#7a8b99", label="Base")
-    axes[1].bar(x + width / 2, losses["augmented"], width=width, color="#b65f2a", label="cGAN-v2 600")
+    axes[1].bar(x - width / 2, losses["base"], width=width, color="#7a8b99", label="原始基线")
+    axes[1].bar(x + width / 2, losses["augmented"], width=width, color="#b65f2a", label="cGAN-v2增强600张")
     axes[1].set_xticks(x)
     axes[1].set_xticklabels([str(seed) for seed in seeds])
-    axes[1].set_ylabel("Best loss")
-    axes[1].set_title("Best validation loss by seed")
+    axes[1].set_ylabel("最佳损失")
+    axes[1].set_title("不同随机种子下的最佳损失")
     axes[1].grid(axis="y", alpha=0.25)
     axes[1].legend(fontsize=8, loc="upper right")
     for idx, seed in enumerate(seeds):
         axes[1].text(idx - width / 2, losses["base"][idx] + 0.004, f"{losses['base'][idx]:.3f}", ha="center", fontsize=7)
         axes[1].text(idx + width / 2, losses["augmented"][idx] + 0.004, f"{losses['augmented'][idx]:.3f}", ha="center", fontsize=7)
 
-    fig.suptitle("Multi-seed validation: baseline vs cGAN-v2 600 generated samples", fontsize=13, fontweight="bold")
+    fig.suptitle("多随机种子复验：原始基线与cGAN-v2 600张增强方案对比", fontsize=13, fontweight="bold")
     fig.tight_layout(rect=(0, 0, 1, 0.93))
-    fig.savefig(output_dir / "multiseed_cgan_v2_600.png", dpi=180)
+    fig.savefig(output_dir / "multiseed_cgan_v2_600.png", dpi=180, bbox_inches="tight")
     plt.close(fig)
 
 

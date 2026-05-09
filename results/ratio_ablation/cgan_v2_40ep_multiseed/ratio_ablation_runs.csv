@@ -1,0 +1,10 @@
+﻿samples_per_class,generated_total,seed,best_val_accuracy,final_val_accuracy,best_val_loss,best_epoch,completed_epochs,output_dir
+25,150,42,0.8416666666666667,0.8305555555555556,0.49718548895584214,3,7,results\ratio_ablation\cgan_v2_40ep_multiseed\runs\gan_25_seed42
+25,150,7,0.9388888888888889,0.8944444444444445,0.17494445942963163,5,9,results\ratio_ablation\cgan_v2_40ep_multiseed\runs\gan_25_seed7
+25,150,123,0.9555555555555556,0.8777777777777778,0.10457462730507056,7,11,results\ratio_ablation\cgan_v2_40ep_multiseed\runs\gan_25_seed123
+50,300,42,0.9777777777777777,0.9555555555555556,0.07968700283090584,10,14,results\ratio_ablation\cgan_v2_40ep_multiseed\runs\gan_50_seed42
+50,300,7,0.9833333333333333,0.7555555555555555,0.10185171830105699,7,11,results\ratio_ablation\cgan_v2_40ep_multiseed\runs\gan_50_seed7
+50,300,123,1.0,0.9972222222222222,0.038058943760006514,18,20,results\ratio_ablation\cgan_v2_40ep_multiseed\runs\gan_50_seed123
+100,600,42,0.9972222222222222,0.9861111111111112,0.04487850483128568,16,20,results\ratio_ablation\cgan_v2_40ep_multiseed\runs\gan_100_seed42
+100,600,7,0.9972222222222222,0.9972222222222222,0.02174461585827885,20,20,results\ratio_ablation\cgan_v2_40ep_multiseed\runs\gan_100_seed7
+100,600,123,0.925,0.8888888888888888,0.2190707216763662,3,7,results\ratio_ablation\cgan_v2_40ep_multiseed\runs\gan_100_seed123

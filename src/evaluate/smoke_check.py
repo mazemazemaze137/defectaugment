@@ -29,6 +29,7 @@ REQUIRED_PATHS = [
     "assets/figures/system_workflow_industrial.png",
     "assets/figures/generation_quality_preview.png",
     "results/ratio_ablation/cgan_v2_40ep_seed42/ratio_ablation_summary.csv",
+    "results/ratio_ablation/cgan_v2_40ep_multiseed/ratio_ablation_summary.csv",
     "results/multiseed/cgan_v2_40ep_600/multiseed_summary.csv",
     "results/industrial_readiness/cgan_v2_40ep_600_seed42/industrial_readiness.json",
 ]

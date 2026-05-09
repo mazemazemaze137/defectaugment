@@ -14,7 +14,7 @@
   },
   "formal_results": {
     "cgan_v2_40ep_fid": 178.41,
-    "ratio_ablation_best": "600 generated samples, best validation accuracy 99.72%, final validation accuracy 98.61%",
+    "ratio_ablation_best": "300 generated samples, 3-seed mean best validation accuracy 98.70%; 600 generated samples has 95.74% mean final validation accuracy",
     "multiseed_best": "cGAN-v2 600 samples average best validation accuracy 99.44%, baseline 98.15%",
     "industrial_gate": "600-sample setting passed: min recall 98.33%, cost-weighted error 0.29%",
     "classifier_comparison": "small_cnn 96.11%, mobilenet_v3_small 95.56%, resnet18 93.33% in the formal backbone comparison run"

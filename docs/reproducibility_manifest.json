@@ -2,8 +2,8 @@
   "python": "3.12.6 (tags/v3.12.6:a4a2d2b, Sep  6 2024, 20:11:23) [MSC v.1940 64 bit (AMD64)]",
   "platform": "Windows-11-10.0.26100-SP0",
   "processor": "AMD64 Family 25 Model 33 Stepping 2, AuthenticAMD",
-  "git_commit": "b95d333",
-  "git_branch": "beta",
+  "git_commit": "e8c117c",
+  "git_branch": "defense-eval-extensions",
   "torch": {
     "available": true,
     "version": "2.7.1+cu118",
@@ -37,7 +37,7 @@
     "raw_train": "data/raw/NEU-DET/train/images",
     "raw_validation": "data/raw/NEU-DET/validation/images",
     "cgan_v2_40ep_generated": "results/cgan_v2_roi_40ep/export_100_per_class",
-    "ratio_ablation": "results/ratio_ablation/cgan_v2_40ep_seed42",
+    "ratio_ablation": "results/ratio_ablation/cgan_v2_40ep_multiseed",
     "multiseed_600": "results/multiseed/cgan_v2_40ep_600",
     "figures": "assets/figures"
   }

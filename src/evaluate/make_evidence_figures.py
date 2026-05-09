@@ -212,7 +212,9 @@ def _save_system_workflow(output_dir):
 
 
 def _save_ratio_ablation_plot(output_dir):
-    path = Path("results/ratio_ablation/cgan_v2_40ep_seed42/ratio_ablation_summary.csv")
+    path = Path("results/ratio_ablation/cgan_v2_40ep_multiseed/ratio_ablation_summary.csv")
+    if not path.exists():
+        path = Path("results/ratio_ablation/cgan_v2_40ep_seed42/ratio_ablation_summary.csv")
     if not path.exists():
         return
 
@@ -227,15 +229,25 @@ def _save_ratio_ablation_plot(output_dir):
     samples = [int(row["samples_per_class"]) for row in rows]
     total_samples = [int(row.get("generated_total", row.get("total_generated", 0))) for row in rows]
     best_acc = [float(row["best_val_accuracy_mean"]) * 100 for row in rows]
+    best_acc_std = [float(row.get("best_val_accuracy_std") or 0) * 100 for row in rows]
     final_acc = [float(row["final_val_accuracy_mean"]) * 100 for row in rows]
     best_loss = [float(row["best_val_loss_mean"]) for row in rows]
 
     x = np.arange(len(samples))
     fig, ax1 = plt.subplots(figsize=(9.8, 4.8))
     ax1.plot(x, best_acc, marker="o", linewidth=2.2, color="#206a5d", label="最佳验证准确率")
+    if any(value > 0 for value in best_acc_std):
+        ax1.fill_between(
+            x,
+            np.array(best_acc) - np.array(best_acc_std),
+            np.array(best_acc) + np.array(best_acc_std),
+            color="#206a5d",
+            alpha=0.14,
+            label="最佳准确率标准差",
+        )
     ax1.plot(x, final_acc, marker="s", linewidth=2.0, color="#3867a6", label="最终验证准确率")
     ax1.set_ylabel("准确率（%）")
-    ax1.set_ylim(max(80, min(final_acc + best_acc) - 4), 100.5)
+    ax1.set_ylim(max(80, min(final_acc + best_acc) - 6), 100.8)
     ax1.set_xticks(x)
     ax1.set_xticklabels([f"每类{sample}张\n共{total}张" for sample, total in zip(samples, total_samples)])
     ax1.grid(axis="y", alpha=0.25)
@@ -251,8 +263,14 @@ def _save_ratio_ablation_plot(output_dir):
     lines, labels = ax1.get_legend_handles_labels()
     lines2, labels2 = ax2.get_legend_handles_labels()
     ax1.legend(lines + lines2, labels + labels2, loc="lower right", fontsize=8)
-    ax1.set_title("cGAN-v2 40轮生成样本加入比例消融", fontsize=13, fontweight="bold")
-    ax1.text(1.1, ax1.get_ylim()[0] + 0.6, "结论：每类100张方案准确率最高、损失最低", fontsize=9, color="#8b1e1e")
+    ax1.set_title("cGAN-v2 40轮生成样本比例消融（3随机种子）", fontsize=13, fontweight="bold")
+    ax1.text(
+        0.55,
+        ax1.get_ylim()[0] + 0.7,
+        "结论：每类50张平均最佳准确率最高；每类100张最终准确率更稳",
+        fontsize=9,
+        color="#8b1e1e",
+    )
     fig.tight_layout()
     fig.savefig(output_dir / "ratio_ablation_cgan_v2_40ep.png", dpi=180, bbox_inches="tight")
     plt.close(fig)

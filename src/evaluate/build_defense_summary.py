@@ -25,7 +25,7 @@ def _load_optional_json(path):
 
 
 def build_summary(output):
-    ratio_rows = _read_csv("results/ratio_ablation/cgan_v2_40ep_seed42/ratio_ablation_summary.csv")
+    ratio_rows = _read_csv("results/ratio_ablation/cgan_v2_40ep_multiseed/ratio_ablation_summary.csv")
     multiseed_rows = _read_csv("results/multiseed/cgan_v2_40ep_600/multiseed_summary.csv")
     multiseed_runs = _read_csv("results/multiseed/cgan_v2_40ep_600/multiseed_runs.csv")
     industrial_300 = _load_optional_json("results/industrial_readiness/cgan_v2_40ep/industrial_readiness.json")
@@ -36,17 +36,19 @@ def build_summary(output):
         "",
         "## 一句话结论",
         "",
-        "40 轮 cGAN-v2 结合质量筛选和合适生成比例后，能够稳定提升 NEU-DET 六类缺陷分类的最佳验证准确率；每类 100 张、共 600 张生成样本的方案在单随机种子和 3 随机种子复验中均表现最好，并通过工业应用就绪度门槛。",
+        "40 轮 cGAN-v2 结合质量筛选和合适生成比例后，能够提升 NEU-DET 六类缺陷分类的最佳验证准确率；3 随机种子比例消融显示每类 50 张方案平均最佳准确率最高，每类 100 张方案在 seed 42 和工业应用门槛中表现较强，但对随机种子更敏感。",
         "",
         "## 生成比例消融",
         "",
-        "| 每类生成样本 | 生成样本总数 | 最佳验证准确率 | 最终验证准确率 | 最佳验证损失 |",
-        "| ---: | ---: | ---: | ---: | ---: |",
+        "| 每类生成样本 | 生成样本总数 | 种子数 | 平均最佳准确率 | 标准差 | 平均最终准确率 | 平均最佳损失 |",
+        "| ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for row in sorted(ratio_rows, key=lambda item: int(item["samples_per_class"])):
+        std = float(row["best_val_accuracy_std"]) if row.get("best_val_accuracy_std") else 0.0
         lines.append(
             f"| {int(row['samples_per_class'])} | {int(row['generated_total'])} | "
-            f"{_pct(row['best_val_accuracy_mean'])} | {_pct(row['final_val_accuracy_mean'])} | "
+            f"{int(row['seeds'])} | {_pct(row['best_val_accuracy_mean'])} | {std * 100:.2f}% | "
+            f"{_pct(row['final_val_accuracy_mean'])} | "
             f"{float(row['best_val_loss_mean']):.4f} |"
         )
 
@@ -108,8 +110,8 @@ def build_summary(output):
             "",
             "1. 系统不是只做 GAN 生成，而是形成预处理、生成、质量评估、筛选、下游验证、工业门槛判断的闭环。",
             "2. 早期 300 张方案能提升准确率但困难类别召回不足，因此不直接声明可上线。",
-            "3. 通过比例消融发现 600 张方案更适合 40 轮 cGAN-v2，且工业门槛复验通过。",
-            "4. 3 随机种子复验显示增强组平均最佳准确率和平均最佳损失均优于基线，结论比单次实验更稳。",
+            "3. 通过 3 随机种子比例消融发现，每类 50 张的平均最佳准确率最高，600 张方案在工业门槛中表现强但随机性更明显。",
+            "4. 600 张方案的多随机种子复验显示增强组平均最佳准确率和平均最佳损失均优于基线，可作为工业试运行候选方案。",
             "",
             "## 可引用图表",
             "",

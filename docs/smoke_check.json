@@ -69,7 +69,7 @@
     {
       "name": "assets\\figures\\ratio_ablation_cgan_v2_40ep.png",
       "passed": true,
-      "detail": "image 1740x840, std=39.93"
+      "detail": "image 1740x840, std=42.49"
     },
     {
       "name": "assets\\figures\\multiseed_cgan_v2_600.png",
@@ -97,6 +97,11 @@
       "detail": "exists"
     },
     {
+      "name": "results\\ratio_ablation\\cgan_v2_40ep_multiseed\\ratio_ablation_summary.csv",
+      "passed": true,
+      "detail": "exists"
+    },
+    {
       "name": "results\\multiseed\\cgan_v2_40ep_600\\multiseed_summary.csv",
       "passed": true,
       "detail": "exists"
@@ -109,7 +114,7 @@
     {
       "name": "thesis_length",
       "passed": true,
-      "detail": "16937 chars >= 15000"
+      "detail": "16581 chars >= 15000"
     },
     {
       "name": "cuda_available",

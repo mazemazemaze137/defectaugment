@@ -5,8 +5,8 @@
 - Python：`3.12.6 (tags/v3.12.6:a4a2d2b, Sep  6 2024, 20:11:23) [MSC v.1940 64 bit (AMD64)]`
 - 平台：`Windows-11-10.0.26100-SP0`
 - 处理器：`AMD64 Family 25 Model 33 Stepping 2, AuthenticAMD`
-- Git 分支：`beta`
-- Git 提交：`b95d333`
+- Git 分支：`defense-eval-extensions`
+- Git 提交：`e8c117c`
 
 ## CUDA / PyTorch
 
@@ -41,14 +41,14 @@
 | raw_train | `data/raw/NEU-DET/train/images` |
 | raw_validation | `data/raw/NEU-DET/validation/images` |
 | cgan_v2_40ep_generated | `results/cgan_v2_roi_40ep/export_100_per_class` |
-| ratio_ablation | `results/ratio_ablation/cgan_v2_40ep_seed42` |
+| ratio_ablation | `results/ratio_ablation/cgan_v2_40ep_multiseed` |
 | multiseed_600 | `results/multiseed/cgan_v2_40ep_600` |
 | figures | `assets/figures` |
 
 ## 推荐复现实验命令
 
 ```powershell
-python -m src.evaluate.run_ratio_ablation --train-dir data/raw/NEU-DET/train/images --val-dir data/raw/NEU-DET/validation/images --generated-source-dir results/cgan_v2_roi_40ep/export_100_per_class --output-dir results/ratio_ablation/cgan_v2_40ep_seed42 --samples-per-class 25 50 100 --seeds 42 --epochs 20 --batch-size 16 --image-size 128 --early-stopping-patience 4
+python -m src.evaluate.run_ratio_ablation --train-dir data/raw/NEU-DET/train/images --val-dir data/raw/NEU-DET/validation/images --generated-source-dir results/cgan_v2_roi_40ep/export_100_per_class --output-dir results/ratio_ablation/cgan_v2_40ep_multiseed --samples-per-class 25 50 100 --seeds 42 7 123 --epochs 20 --batch-size 16 --image-size 128 --early-stopping-patience 4
 python -m src.evaluate.run_multiseed_validation --train-dir data/raw/NEU-DET/train/images --val-dir data/raw/NEU-DET/validation/images --generated-dir results/ratio_ablation/cgan_v2_40ep_seed42/subsets/gan_100_per_class --output-dir results/multiseed/cgan_v2_40ep_600 --seeds 42 7 123 --epochs 20 --batch-size 16 --image-size 128 --early-stopping-patience 4 --industrial-report
 python -m src.evaluate.make_evidence_figures --output-dir assets/figures
 python -m src.evaluate.build_defense_summary --output docs/defense_summary.md

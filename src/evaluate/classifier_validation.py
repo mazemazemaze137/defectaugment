@@ -3,6 +3,7 @@ import csv
 import json
 import random
 import re
+import shutil
 import time
 from pathlib import Path
 
@@ -12,6 +13,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from torchvision import models
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
@@ -72,11 +74,12 @@ def _collect_generated_images(generated_dir, class_to_idx):
 
 
 class DefectClassificationDataset(Dataset):
-    def __init__(self, samples, image_size=128):
+    def __init__(self, samples, image_size=128, include_path=False):
         if not samples:
             raise ValueError("No image samples found.")
         self.samples = samples
         self.image_size = image_size
+        self.include_path = include_path
 
     def __len__(self):
         return len(self.samples)
@@ -90,6 +93,8 @@ class DefectClassificationDataset(Dataset):
         img = img.astype(np.float32) / 255.0
         img = (img - 0.5) / 0.5
         img = np.expand_dims(img, axis=0)
+        if self.include_path:
+            return torch.from_numpy(img), torch.tensor(label, dtype=torch.long), str(path)
         return torch.from_numpy(img), torch.tensor(label, dtype=torch.long)
 
 
@@ -122,6 +127,31 @@ class SmallDefectCNN(nn.Module):
         return self.classifier(x)
 
 
+def build_classifier_model(model_name, num_classes):
+    model_name = (model_name or "small_cnn").lower()
+    if model_name == "small_cnn":
+        return SmallDefectCNN(num_classes=num_classes)
+    if model_name == "resnet18":
+        model = models.resnet18(weights=None)
+        model.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        model.fc = nn.Linear(model.fc.in_features, num_classes)
+        return model
+    if model_name == "mobilenet_v3_small":
+        model = models.mobilenet_v3_small(weights=None)
+        first_conv = model.features[0][0]
+        model.features[0][0] = nn.Conv2d(
+            1,
+            first_conv.out_channels,
+            kernel_size=first_conv.kernel_size,
+            stride=first_conv.stride,
+            padding=first_conv.padding,
+            bias=False,
+        )
+        model.classifier[-1] = nn.Linear(model.classifier[-1].in_features, num_classes)
+        return model
+    raise ValueError(f"Unsupported classifier model: {model_name}")
+
+
 def _build_loaders(train_dir, val_dir, generated_dir=None, image_size=128, batch_size=32, num_workers=0):
     train_samples, class_to_idx = _collect_folder_images(train_dir)
     generated_samples = _collect_generated_images(generated_dir, class_to_idx)
@@ -152,7 +182,7 @@ def _build_loaders(train_dir, val_dir, generated_dir=None, image_size=128, batch
         "train_total": len(train_dataset),
         "validation": len(val_dataset),
     }
-    return train_loader, val_loader, class_names, counts
+    return train_loader, val_loader, class_names, counts, val_samples
 
 
 def _set_seed(seed):
@@ -271,6 +301,73 @@ def _save_history_plot(history, output_path):
     plt.close(fig)
 
 
+def _export_low_confidence_samples(
+    model,
+    samples,
+    class_names,
+    output_dir,
+    image_size,
+    device,
+    threshold=0.7,
+    max_samples=80,
+    include_errors=True,
+):
+    if threshold <= 0 and not include_errors:
+        return {"csv_path": "", "image_dir": "", "num_records": 0}
+
+    dataset = DefectClassificationDataset(samples, image_size=image_size, include_path=True)
+    loader = DataLoader(dataset, batch_size=64, shuffle=False, num_workers=0, pin_memory=torch.cuda.is_available())
+    records = []
+    model.eval()
+    with torch.no_grad():
+        for images, labels, paths in loader:
+            images = images.to(device, non_blocking=True)
+            outputs = model(images)
+            probs = torch.softmax(outputs, dim=1)
+            confidences, preds = probs.max(dim=1)
+            for path, true_label, pred_label, confidence in zip(
+                paths,
+                labels.cpu().numpy(),
+                preds.cpu().numpy(),
+                confidences.cpu().numpy(),
+            ):
+                correct = int(true_label) == int(pred_label)
+                if float(confidence) <= threshold or (include_errors and not correct):
+                    records.append(
+                        {
+                            "path": path,
+                            "true_label": class_names[int(true_label)],
+                            "pred_label": class_names[int(pred_label)],
+                            "confidence": float(confidence),
+                            "correct": correct,
+                        }
+                    )
+
+    records.sort(key=lambda row: (row["correct"], row["confidence"]))
+    selected = records[:max_samples]
+    image_dir = output_dir / "low_confidence_samples"
+    image_dir.mkdir(parents=True, exist_ok=True)
+    for idx, row in enumerate(selected, start=1):
+        source = Path(row["path"])
+        safe_name = f"{idx:03d}_true-{row['true_label']}_pred-{row['pred_label']}_conf-{row['confidence']:.3f}{source.suffix.lower()}"
+        target = image_dir / safe_name
+        try:
+            shutil.copy2(source, target)
+            row["exported_path"] = str(target)
+        except OSError:
+            row["exported_path"] = ""
+
+    csv_path = output_dir / "low_confidence_samples.csv"
+    with csv_path.open("w", newline="", encoding="utf-8-sig") as file:
+        writer = csv.DictWriter(
+            file,
+            fieldnames=["path", "true_label", "pred_label", "confidence", "correct", "exported_path"],
+        )
+        writer.writeheader()
+        writer.writerows(selected)
+    return {"csv_path": str(csv_path), "image_dir": str(image_dir), "num_records": len(selected)}
+
+
 def run_classification_validation(
     train_dir,
     val_dir,
@@ -286,13 +383,16 @@ def run_classification_validation(
     early_stopping_patience=0,
     class_weights=None,
     quiet=False,
+    model_name="small_cnn",
+    low_confidence_threshold=0.7,
+    max_low_confidence_samples=80,
 ):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     _set_seed(seed)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    train_loader, val_loader, class_names, counts = _build_loaders(
+    train_loader, val_loader, class_names, counts, val_samples = _build_loaders(
         train_dir=train_dir,
         val_dir=val_dir,
         generated_dir=generated_dir,
@@ -301,7 +401,8 @@ def run_classification_validation(
         num_workers=num_workers,
     )
 
-    model = SmallDefectCNN(num_classes=len(class_names)).to(device)
+    model_name = (model_name or "small_cnn").lower()
+    model = build_classifier_model(model_name, num_classes=len(class_names)).to(device)
     weight_tensor, resolved_class_weights = _build_class_weight_tensor(class_names, class_weights or {}, device)
     criterion = nn.CrossEntropyLoss(weight=weight_tensor)
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
@@ -388,9 +489,21 @@ def run_classification_validation(
     confusion = best_eval["confusion_matrix"] if best_eval is not None else np.zeros((len(class_names), len(class_names)))
     np.savetxt(output_dir / "confusion_matrix.csv", confusion, fmt="%d", delimiter=",")
     _save_confusion_matrix(confusion, class_names, output_dir / "confusion_matrix.png")
+    low_confidence = _export_low_confidence_samples(
+        model=model,
+        samples=val_samples,
+        class_names=class_names,
+        output_dir=output_dir,
+        image_size=image_size,
+        device=device,
+        threshold=low_confidence_threshold,
+        max_samples=max_low_confidence_samples,
+        include_errors=True,
+    )
 
     summary = {
         "device": str(device),
+        "model_name": model_name,
         "class_names": class_names,
         "counts": counts,
         "epochs": epochs,
@@ -407,6 +520,8 @@ def run_classification_validation(
         "best_val_loss": best_eval["loss"] if best_eval is not None else 0.0,
         "early_stopping_patience": early_stopping_patience,
         "class_weights": resolved_class_weights,
+        "low_confidence_threshold": low_confidence_threshold,
+        "low_confidence": low_confidence,
         "output_dir": str(output_dir),
         "generated_dir": str(generated_dir) if generated_dir else "",
     }
@@ -436,6 +551,9 @@ def main():
         help="Optional comma-separated class loss weights, e.g. pitted-surface=1.5,crazing=1.2",
     )
     parser.add_argument("--quiet", action="store_true", help="Disable per-batch progress bars.")
+    parser.add_argument("--model-name", default="small_cnn", choices=["small_cnn", "resnet18", "mobilenet_v3_small"])
+    parser.add_argument("--low-confidence-threshold", type=float, default=0.7)
+    parser.add_argument("--max-low-confidence-samples", type=int, default=80)
     args = parser.parse_args()
 
     summary = run_classification_validation(
@@ -453,6 +571,9 @@ def main():
         early_stopping_patience=args.early_stopping_patience,
         class_weights=parse_class_weights(args.class_weights),
         quiet=args.quiet,
+        model_name=args.model_name,
+        low_confidence_threshold=args.low_confidence_threshold,
+        max_low_confidence_samples=args.max_low_confidence_samples,
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 

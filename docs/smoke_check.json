@@ -27,6 +27,16 @@
       "detail": "exists"
     },
     {
+      "name": "src\\evaluate\\detection_validation.py",
+      "passed": true,
+      "detail": "exists"
+    },
+    {
+      "name": "src\\evaluate\\run_classifier_model_comparison.py",
+      "passed": true,
+      "detail": "exists"
+    },
+    {
       "name": "assets\\figures\\pitted_surface_refinement_grid.png",
       "passed": true,
       "detail": "image 1800x1296, std=52.56"
@@ -69,7 +79,7 @@
     {
       "name": "thesis_length",
       "passed": true,
-      "detail": "33537 chars >= 15000"
+      "detail": "33746 chars >= 15000"
     },
     {
       "name": "cuda_available",

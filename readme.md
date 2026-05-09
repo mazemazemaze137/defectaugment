@@ -12,6 +12,8 @@ DefectAugment 是一个面向金属表面缺陷图像的毕业设计项目。系
 - 样本筛选：按清晰度、灰度方差和亮度阈值筛选生成样本，降低低质量样本进入下游训练的概率。
 - 样本后处理：支持按真实类别统计匹配生成图像亮度和对比度，改善困难类别纹理。
 - 下游验证：训练轻量 CNN 分类器，对比原始数据、GAN 增强数据和传统增强数据的验证准确率，并支持类别损失权重、早停和最佳模型保存。
+- 模型对比：下游分类支持 `small_cnn`、`resnet18` 和 `mobilenet_v3_small`，可导出低置信度/误分类样本用于人工复核。
+- 目标检测验证：支持读取 NEU-DET VOC XML 标注，使用 Faster R-CNN MobileNet-FPN 进行 AP50、Precision、Recall 验证。
 - 复现实验：支持多随机种子验证和增强比例消融，自动汇总平均值、标准差和 Markdown 报告。
 - 复现环境：支持自动导出 Python、CUDA、PyTorch、依赖版本、Git 提交和关键路径清单。
 - 工业应用评估：基于混淆矩阵计算类别召回率、精确率、代价加权错误率和上线门槛，Streamlit 分类验证后可自动生成评估结论。
@@ -61,6 +63,12 @@ python -m src.evaluate.industrial_readiness --result-dir results/ablation_earlys
 
 # 多随机种子复现实验，可选加入困难类别损失权重
 python -m src.evaluate.run_multiseed_validation --train-dir data/raw/NEU-DET/train/images --val-dir data/raw/NEU-DET/validation/images --generated-dir results/cgan_v2_roi_40ep/export_filtered_50_per_class --output-dir results/multiseed/cgan_v2_40ep --seeds 42 7 123 --epochs 20 --batch-size 16 --image-size 128 --early-stopping-patience 4 --class-weights pitted-surface=1.5
+
+# 分类器模型对比，并导出低置信度样本
+python -m src.evaluate.run_classifier_model_comparison --train-dir data/raw/NEU-DET/train/images --val-dir data/raw/NEU-DET/validation/images --generated-dir results/ratio_ablation/cgan_v2_40ep_seed42/subsets/gan_100_per_class --output-dir results/classifier_model_comparison/cgan_v2_600 --models small_cnn resnet18 mobilenet_v3_small --epochs 20 --batch-size 16 --image-size 128 --early-stopping-patience 4
+
+# 目标检测验证 smoke；完整实验可去掉 max-train/max-val 并适当增加 epochs
+python -m src.evaluate.detection_validation --output-dir results/detection_validation/smoke --epochs 1 --batch-size 1 --image-size 256 --max-train 2 --max-val 2 --quiet
 
 # cGAN-v2 生成样本比例消融：每类 25、50、100 张
 python -m src.evaluate.run_ratio_ablation --train-dir data/raw/NEU-DET/train/images --val-dir data/raw/NEU-DET/validation/images --generated-source-dir results/cgan_v2_roi_40ep/export_100_per_class --output-dir results/ratio_ablation/cgan_v2_40ep_seed42 --samples-per-class 25 50 100 --seeds 42 --epochs 20 --batch-size 16 --image-size 128 --early-stopping-patience 4

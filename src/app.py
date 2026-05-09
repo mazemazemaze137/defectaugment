@@ -25,6 +25,7 @@ from src.dataset_loader import (
 from src.evaluate.classifier_validation import parse_class_weights, run_classification_validation
 from src.evaluate.build_defense_summary import build_summary as build_defense_summary
 from src.evaluate.build_reproducibility_manifest import build_manifest as build_reproducibility_manifest
+from src.evaluate.detection_validation import run_detection_validation
 from src.evaluate.industrial_readiness import analyze_industrial_readiness, parse_severity_overrides
 from src.evaluate.make_evidence_figures import create_evidence_figures
 from src.evaluate.metrics import evaluate_generated_dataset
@@ -101,6 +102,8 @@ def _health_rows():
         ("答辩汇总", "docs/defense_summary.md"),
         ("复现环境清单", "docs/reproducibility_manifest.md"),
         ("答辩演示清单", "docs/defense_demo_checklist.md"),
+        ("目标检测验证脚本", "src/evaluate/detection_validation.py"),
+        ("分类器模型对比脚本", "src/evaluate/run_classifier_model_comparison.py"),
     ]
     for name, path in checks:
         status, detail = _path_status(path)
@@ -336,7 +339,7 @@ if st.session_state.dialog_error:
 
 module = st.sidebar.radio(
     "功能模块",
-    ("数据增强训练", "数据质量评估", "下游分类验证", "工业应用评估", "答辩材料与健康检查"),
+    ("数据增强训练", "数据质量评估", "下游分类验证", "目标检测验证", "工业应用评估", "答辩材料与健康检查"),
 )
 
 if module == "答辩材料与健康检查":
@@ -505,6 +508,12 @@ if module == "下游分类验证":
         cls_lr = st.number_input("学习率", min_value=0.00001, max_value=0.01, value=0.001, format="%.5f")
     with cls_col5:
         cls_patience = st.number_input("早停耐心", min_value=0, max_value=20, value=4, step=1)
+    cls_model_name = st.selectbox(
+        "分类器模型",
+        ["small_cnn", "resnet18", "mobilenet_v3_small"],
+        index=0,
+    )
+    cls_low_conf_threshold = st.slider("低置信度导出阈值", 0.0, 1.0, 0.70, 0.05)
     cls_class_weights = st.text_input(
         "类别损失权重（可选，用于困难类别）",
         value="",
@@ -528,6 +537,8 @@ if module == "下游分类验证":
                     num_workers=0,
                     early_stopping_patience=int(cls_patience),
                     class_weights=parse_class_weights(cls_class_weights),
+                    model_name=cls_model_name,
+                    low_confidence_threshold=float(cls_low_conf_threshold),
                 )
             except Exception as exc:
                 st.error(f"分类验证失败：{exc}")
@@ -549,6 +560,12 @@ if module == "下游分类验证":
                 confusion_path = os.path.join(summary["output_dir"], "confusion_matrix.png")
                 if os.path.exists(confusion_path):
                     st.image(confusion_path, caption="混淆矩阵", use_container_width=True)
+                low_conf = summary.get("low_confidence", {})
+                if low_conf.get("num_records", 0):
+                    st.warning(
+                        f"已导出 {low_conf['num_records']} 个低置信度/误分类样本："
+                        f"{low_conf.get('csv_path', '')}"
+                    )
                 if auto_industrial_eval:
                     try:
                         industrial = analyze_industrial_readiness(
@@ -565,6 +582,65 @@ if module == "下游分类验证":
                             f"{industrial['weighted_error_rate']:.2%}。"
                         )
                 st.success(f"分类验证结果已保存至：{summary['output_dir']}")
+    st.stop()
+
+if module == "目标检测验证":
+    st.header("目标检测验证")
+    st.caption("基于 NEU-DET XML 标注训练 Faster R-CNN MobileNet-FPN，输出 AP50、Precision 和 Recall。当前 GAN ROI 样本没有边界框标注，因此不直接加入检测训练。")
+
+    det_train_images = st.text_input("检测训练图像目录", value="data/raw/NEU-DET/train/images")
+    det_train_ann = st.text_input("检测训练标注目录", value="data/raw/NEU-DET/train/annotations")
+    det_val_images = st.text_input("检测验证图像目录", value="data/raw/NEU-DET/validation/images")
+    det_val_ann = st.text_input("检测验证标注目录", value="data/raw/NEU-DET/validation/annotations")
+    det_output_dir = st.text_input("检测结果输出目录", value="results/detection_validation/gui")
+
+    det_col1, det_col2, det_col3, det_col4 = st.columns(4)
+    with det_col1:
+        det_epochs = st.number_input("训练轮数", min_value=1, max_value=50, value=1, step=1)
+    with det_col2:
+        det_batch = st.selectbox("Batch Size", [1, 2, 4], index=1)
+    with det_col3:
+        det_image_size = st.selectbox("输入尺寸", [256, 320, 416], index=1)
+    with det_col4:
+        det_lr = st.number_input("学习率", min_value=0.00001, max_value=0.01, value=0.0005, format="%.5f")
+
+    det_limit_col1, det_limit_col2, det_limit_col3 = st.columns(3)
+    with det_limit_col1:
+        det_max_train = st.number_input("最大训练样本（0为不限）", min_value=0, max_value=2000, value=80, step=20)
+    with det_limit_col2:
+        det_max_val = st.number_input("最大验证样本（0为不限）", min_value=0, max_value=1000, value=40, step=20)
+    with det_limit_col3:
+        det_score = st.slider("预测分数阈值", 0.05, 0.95, 0.30, 0.05)
+
+    if st.button("开始目标检测验证", type="primary"):
+        with st.spinner("正在训练并评估目标检测模型..."):
+            try:
+                det_summary = run_detection_validation(
+                    train_images=det_train_images,
+                    train_annotations=det_train_ann,
+                    val_images=det_val_images,
+                    val_annotations=det_val_ann,
+                    output_dir=det_output_dir,
+                    epochs=int(det_epochs),
+                    batch_size=int(det_batch),
+                    image_size=int(det_image_size),
+                    lr=float(det_lr),
+                    max_train=int(det_max_train) or None,
+                    max_val=int(det_max_val) or None,
+                    score_threshold=float(det_score),
+                    quiet=True,
+                )
+            except Exception as exc:
+                st.error(f"目标检测验证失败：{exc}")
+            else:
+                st.metric("mAP@0.5", f"{det_summary['map50']:.2%}")
+                st.write(
+                    f"训练样本：{det_summary['train_samples']}，验证样本：{det_summary['val_samples']}，"
+                    f"耗时：{det_summary['elapsed_seconds']:.2f} 秒。"
+                )
+                st.dataframe(pd.DataFrame(det_summary["class_metrics"]), use_container_width=True)
+                st.info(det_summary["note"])
+                st.success(f"检测验证结果已保存至：{det_summary['output_dir']}")
     st.stop()
 
 if module == "工业应用评估":

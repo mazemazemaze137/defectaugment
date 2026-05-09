@@ -286,6 +286,68 @@ def _save_industrial_gate_comparison(output_dir):
     plt.close(fig)
 
 
+def _save_multiseed_600_plot(output_dir):
+    path = Path("results/multiseed/cgan_v2_40ep_600/multiseed_runs.csv")
+    if not path.exists():
+        return
+
+    rows = []
+    with path.open("r", encoding="utf-8-sig", newline="") as file:
+        rows = list(csv.DictReader(file))
+    if not rows:
+        return
+
+    seeds = sorted({int(row["seed"]) for row in rows})
+    groups = ["base", "augmented"]
+    values = {
+        group: [
+            float(next(row["best_val_accuracy"] for row in rows if row["group"] == group and int(row["seed"]) == seed)) * 100
+            for seed in seeds
+        ]
+        for group in groups
+    }
+    losses = {
+        group: [
+            float(next(row["best_val_loss"] for row in rows if row["group"] == group and int(row["seed"]) == seed))
+            for seed in seeds
+        ]
+        for group in groups
+    }
+
+    x = np.arange(len(seeds))
+    width = 0.34
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.4))
+    axes[0].bar(x - width / 2, values["base"], width=width, color="#7a8b99", label="Base")
+    axes[0].bar(x + width / 2, values["augmented"], width=width, color="#206a5d", label="cGAN-v2 600")
+    axes[0].set_xticks(x)
+    axes[0].set_xticklabels([str(seed) for seed in seeds])
+    axes[0].set_ylabel("Best accuracy (%)")
+    axes[0].set_ylim(max(88, min(values["base"] + values["augmented"]) - 4), 100.8)
+    axes[0].set_title("Best validation accuracy by seed")
+    axes[0].grid(axis="y", alpha=0.25)
+    axes[0].legend(fontsize=8, loc="lower right")
+    for idx, seed in enumerate(seeds):
+        axes[0].text(idx - width / 2, values["base"][idx] + 0.15, f"{values['base'][idx]:.2f}%", ha="center", fontsize=7)
+        axes[0].text(idx + width / 2, values["augmented"][idx] + 0.15, f"{values['augmented'][idx]:.2f}%", ha="center", fontsize=7)
+
+    axes[1].bar(x - width / 2, losses["base"], width=width, color="#7a8b99", label="Base")
+    axes[1].bar(x + width / 2, losses["augmented"], width=width, color="#b65f2a", label="cGAN-v2 600")
+    axes[1].set_xticks(x)
+    axes[1].set_xticklabels([str(seed) for seed in seeds])
+    axes[1].set_ylabel("Best loss")
+    axes[1].set_title("Best validation loss by seed")
+    axes[1].grid(axis="y", alpha=0.25)
+    axes[1].legend(fontsize=8, loc="upper right")
+    for idx, seed in enumerate(seeds):
+        axes[1].text(idx - width / 2, losses["base"][idx] + 0.004, f"{losses['base'][idx]:.3f}", ha="center", fontsize=7)
+        axes[1].text(idx + width / 2, losses["augmented"][idx] + 0.004, f"{losses['augmented'][idx]:.3f}", ha="center", fontsize=7)
+
+    fig.suptitle("Multi-seed validation: baseline vs cGAN-v2 600 generated samples", fontsize=13, fontweight="bold")
+    fig.tight_layout(rect=(0, 0, 1, 0.93))
+    fig.savefig(output_dir / "multiseed_cgan_v2_600.png", dpi=180)
+    plt.close(fig)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Create thesis evidence figures from experiment outputs.")
     parser.add_argument("--output-dir", default="assets/figures")
@@ -299,6 +361,7 @@ def main():
     _save_system_workflow(output_dir)
     _save_ratio_ablation_plot(output_dir)
     _save_industrial_gate_comparison(output_dir)
+    _save_multiseed_600_plot(output_dir)
     print(json.dumps({"output_dir": str(output_dir), "figures": sorted(p.name for p in output_dir.glob("*.png"))}, ensure_ascii=False, indent=2))
 
 

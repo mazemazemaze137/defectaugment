@@ -87,6 +87,7 @@ def parse_args():
     parser.add_argument("--min-std", type=float, default=8.0)
     parser.add_argument("--class-weights", default="")
     parser.add_argument("--reuse-existing", action="store_true")
+    parser.add_argument("--show-progress", action="store_true")
     return parser.parse_args()
 
 
@@ -129,6 +130,7 @@ def main():
                 seed=seed,
                 early_stopping_patience=args.early_stopping_patience,
                 class_weights=class_weights,
+                quiet=not args.show_progress,
             )
             rows.append(
                 {

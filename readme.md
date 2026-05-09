@@ -13,6 +13,7 @@ DefectAugment 是一个面向金属表面缺陷图像的毕业设计项目。系
 - 样本后处理：支持按真实类别统计匹配生成图像亮度和对比度，改善困难类别纹理。
 - 下游验证：训练轻量 CNN 分类器，对比原始数据、GAN 增强数据和传统增强数据的验证准确率，并支持类别损失权重、早停和最佳模型保存。
 - 复现实验：支持多随机种子验证和增强比例消融，自动汇总平均值、标准差和 Markdown 报告。
+- 复现环境：支持自动导出 Python、CUDA、PyTorch、依赖版本、Git 提交和关键路径清单。
 - 工业应用评估：基于混淆矩阵计算类别召回率、精确率、代价加权错误率和上线门槛，Streamlit 分类验证后可自动生成评估结论。
 
 ## 快速开始
@@ -42,6 +43,12 @@ python -m src.evaluate.experiment_report --base-dir results/ablation_earlystop/b
 
 # 生成论文和答辩用证据图
 python -m src.evaluate.make_evidence_figures --output-dir assets/figures
+
+# 汇总关键实验结果，生成答辩速查文档
+python -m src.evaluate.build_defense_summary --output docs/defense_summary.md
+
+# 生成复现环境清单
+python -m src.evaluate.build_reproducibility_manifest --output docs/reproducibility_manifest.md
 
 # 从分类验证结果生成工业应用就绪度报告
 python -m src.evaluate.industrial_readiness --result-dir results/ablation_earlystop/cgan_v2_40ep_filtered_300 --output-dir results/industrial_readiness/cgan_v2_40ep --min-best-accuracy 0.98 --min-class-recall 0.95 --max-weighted-error 0.06
@@ -85,5 +92,9 @@ python -m src.evaluate.run_ratio_ablation --train-dir data/raw/NEU-DET/train/ima
 | 每类 100 张 | 600 | 99.72% | 98.61% | 0.0533 |
 
 从工业应用角度继续评估 cGAN-v2 40 轮分类结果，在最佳准确率门槛 98%、最低类别召回率门槛 95%、代价加权错误率门槛 6% 下，每类 50 张、共 300 张样本的方案未通过直接上线，主要原因是 `pitted-surface` 召回率为 90.00%。将比例提高到每类 100 张、共 600 张后，最佳验证准确率达到 99.72%，最低类别召回率达到 98.33%，代价加权错误率降至 0.29%，通过工业应用就绪度门槛。该结果使答辩结论更加明确：系统不仅能生成样本，还能通过比例消融和工业门槛评估筛选出更适合试运行的增强方案。
+
+对每类 100 张、共 600 张 cGAN-v2 样本继续进行 3 随机种子复验后，增强组平均最佳验证准确率为 99.44%，原始基线为 98.15%，平均提升 1.30 个百分点；增强组平均最佳验证损失为 0.0647，低于基线的 0.0941。对应答辩速查文档见 `docs/defense_summary.md`，多随机种子对比图见 `assets/figures/multiseed_cgan_v2_600.png`。
+
+答辩现场演示顺序、可能追问和谨慎表述已整理到 `docs/defense_demo_checklist.md`。
 
 实验表明，模型结构升级、继续训练、质量筛选和增强比例调节可以共同改善生成样本分布，并带来更高的最佳分类准确率。论文中可据此形成较稳妥的结论：本系统不仅实现了生成式增强，还具备评估、筛选、后处理、下游对照、比例消融、工业门槛判断和证据图生成能力；后续应继续扩展多随机种子比例消融和目标检测 mAP 验证。

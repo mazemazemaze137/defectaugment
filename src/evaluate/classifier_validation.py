@@ -285,6 +285,7 @@ def run_classification_validation(
     amp=True,
     early_stopping_patience=0,
     class_weights=None,
+    quiet=False,
 ):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -321,7 +322,7 @@ def run_classification_validation(
         train_correct = 0
         train_total = 0
 
-        pbar = tqdm(train_loader, desc=f"Classifier epoch {epoch}/{epochs}")
+        pbar = tqdm(train_loader, desc=f"Classifier epoch {epoch}/{epochs}", disable=quiet)
         for images, labels in pbar:
             images = images.to(device, non_blocking=True)
             labels = labels.to(device, non_blocking=True)
@@ -362,7 +363,8 @@ def run_classification_validation(
         else:
             patience_counter += 1
             if early_stopping_patience > 0 and patience_counter >= early_stopping_patience:
-                print(f"Early stopping at epoch {epoch}. Best epoch: {best_epoch}")
+                if not quiet:
+                    print(f"Early stopping at epoch {epoch}. Best epoch: {best_epoch}")
                 break
 
     elapsed_seconds = time.perf_counter() - start_time
@@ -433,6 +435,7 @@ def main():
         default="",
         help="Optional comma-separated class loss weights, e.g. pitted-surface=1.5,crazing=1.2",
     )
+    parser.add_argument("--quiet", action="store_true", help="Disable per-batch progress bars.")
     args = parser.parse_args()
 
     summary = run_classification_validation(
@@ -449,6 +452,7 @@ def main():
         amp=not args.no_amp,
         early_stopping_patience=args.early_stopping_patience,
         class_weights=parse_class_weights(args.class_weights),
+        quiet=args.quiet,
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 

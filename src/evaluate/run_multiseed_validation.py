@@ -87,6 +87,7 @@ def parse_args():
     parser.add_argument("--class-weights", default="")
     parser.add_argument("--reuse-existing", action="store_true")
     parser.add_argument("--industrial-report", action="store_true")
+    parser.add_argument("--show-progress", action="store_true")
     return parser.parse_args()
 
 
@@ -108,6 +109,7 @@ def main():
             "seed": seed,
             "early_stopping_patience": args.early_stopping_patience,
             "class_weights": class_weights,
+            "quiet": not args.show_progress,
         }
         base_dir = output_dir / f"base_seed{seed}"
         aug_dir = output_dir / f"augmented_seed{seed}"
